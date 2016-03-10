@@ -1,0 +1,720 @@
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	46	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	46	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	46	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	46	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	46	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	46	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	46	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	46	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	46	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	46	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	46	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	100	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	100	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	100	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	100	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	100	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	100	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	100	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	100	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	100	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	100	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	100	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	200	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	200	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	200	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	200	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	200	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	200	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	200	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	200	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	200	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	200	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	200	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	300	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	300	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	300	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	300	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	300	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	300	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	300	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	300	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	300	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	300	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	300	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	400	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	400	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	400	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	400	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	400	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	400	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	400	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	400	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	400	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	400	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	400	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	500	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	500	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	600	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	600	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	600	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	600	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	600	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	600	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	600	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	600	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	600	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	600	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	600	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	700	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	700	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	700	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	700	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	700	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	700	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	700	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	700	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	700	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	700	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	700	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	800	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	800	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	800	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	800	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	800	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	800	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	800	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	800	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	800	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	800	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	800	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	900	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	900	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	900	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	900	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	900	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	900	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	900	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	900	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	900	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	900	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	900	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	1000	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1000	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	1100	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1100	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	1200	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1200	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	1300	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1300	1000Mbps
+2	tx1	0	0
+21	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	1400	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1400	1000Mbps
+2	tx1	0	0
+2	reset
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	1500	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	1500	1000Mbps
+2	tx1	0	0
+2	reset

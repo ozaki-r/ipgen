@@ -1,0 +1,47 @@
+              ipgen - interactive packet generator ver#### - netmap API:##	id=ipgen_version,DBL	id=netmap_api,U32
+                                                                          
+      #################### ######### ######### ####################       	id=ifname0,RIGHT,STR	id=twiddle0,STR,LEFT	id=twiddle1,STR	id=ifname1,LEFT,STR
+                                                                          
+  Total Count:                                                            
+    TX: ######################## pkt    TX: ###################### pkt    	id=if0_tx,U64			id=if1_tx,U64
+    TX-etc: #################### pkt    TX-etc: ################## pkt    	id=if0_tx_etc,U64		id=if1_tx_etc,U64
+    TX-underrun: ############### pkt    TX-underrun: ############# pkt    	id=if0_tx_underrun,U64		id=if1_rx_underrun,U64
+    RX: ######################## pkt    RX: ###################### pkt    	id=if0_rx,U64			id=if1_rx,U64
+    RX-drop: ################### pkt    RX-drop: ################# pkt    	id=if0_rx_drop,U64		id=if1_rx_drop,U64
+    RX-dup: #################### pkt    RX-dup: ################## pkt    	id=if0_rx_dup,U64		id=if1_rx_dup,U64
+    RX-reorder: ################ pkt    RX-reorder: ############## pkt    	id=if0_rx_reorder,U64		id=if1_rx_reorder,U64
+    RX-reorder/flow: ########### pkt    RX-reorder/flow: ######### pkt    	id=if0_rx_reorder_flow,U64	id=if1_rx_reorder_flow,U64
+    RX-flowctrl: ############### pkt    RX-flowctrl: ############# pkt    	id=if0_rx_flow,U64		id=if1_rx_flow,U64
+    RX-arp: #################### pkt    RX-arp: ################## pkt    	id=if0_rx_arp,U64		id=if1_rx_arp,U64
+    RX-icmpecho: ############### pkt    RX-icmpecho: ############# pkt    	id=if0_rx_icmpecho,U64		id=if1_rx_icmpecho,U64
+       icmpunreach: ############ pkt       icmpunreach: ########## pkt    	id=if0_rx_icmpunreach,U64	id=if1_rx_icmpunreach,U64
+       icmpredirect: ########### pkt       icmpredirect: ######### pkt    	id=if0_rx_icmpredirect,U64	id=if1_rx_icmpredirect,U64
+       icmpother: ############## pkt       icmpother: ############ pkt    	id=if0_rx_icmpother,U64		id=if1_rx_icmpother,U64
+    RX-other: ################## pkt    RX-other: ################ pkt    	id=if0_rx_other,U64		id=if1_rx_other,U64
+                                                                          
+  Delta:                                                                  
+                 TX: ########### pps               TX: ########### pps    	id=if0_tx_delta,U64		id=if1_tx_delta,U64
+                 TX: ########### bytes/s           TX: ########### bytes/s	id=if0_tx_byte_delta,U64	id=if1_tx_byte_delta,U64
+                 TX: ########### Mbps              TX: ########### Mbps   	id=if0_tx_Mbps,DBL		id=if1_tx_Mbps,DBL
+                 RX: ########### pps               RX: ########### pps    	id=if0_rx_delta,U64		id=if1_rx_delta,U64
+                 RX: ########### bytes/s           RX: ########### bytes/s	id=if0_rx_byte_delta,U64	id=if1_rx_byte_delta,U64
+                 RX: ########### Mbps              RX: ########### Mbps   	id=if0_rx_Mbps,DBL		id=if1_rx_Mbps,DBL
+                                                                          
+  Latency:      min: ########### ms               min: ########### ms     	id=if0_latency_min,DBL		id=if1_latency_min,DBL
+                max: ########### ms               max: ########### ms     	id=if0_latency_max,DBL		id=if1_latency_max,DBL
+                avg: ########### ms               avg: ########### ms     	id=if0_latency_avg,DBL		id=if1_latency_avg,DBL
+                                                                          
+  Control:                                                                
+        Hz: ######   Flow:[#######]      Traffic: Burst[#]/Steady[#]      	id=pps_hz,LEFT,U32		id=opt_nflow,LEFT,U32,EDIT	id=button_burst,BUTTON	id=button_steady,BUTTON
+  TX-control:                                                             
+        TX-pktsize:[##########]           TX-pktsize:[##########]         	id=if0_pktsize,LEFT,U32,EDIT	id=if1_pktsize,LEFT,U32,EDIT
+        TX-pps:    [##########]           TX-pps:    [##########]         	id=if0_pps,LEFT,U32,EDIT	id=if1_pps,LEFT,U32,EDIT
+     (max sustained:##########)        (max sustained:##########)         	id=if0_pps_max,LEFT,U32		id=if1_pps_max,LEFT,U32
+        Mbps:       ##########            Mbps:       ##########          	id=if0_implicit_Mbps,DBL	id=if1_implicit_Mbps,DBL
+        Start[#]/Stop[#]                  Start[#]/Stop[#]                	id=if0_start,BUTTON	id=if0_stop,BUTTON	id=if1_start,BUTTON	id=if1_stop,BUTTON
+                                                                          
+  USAGE:                                                                  
+    'z' - clear statistics,  'q' - quit                                   
+    <TAB>,<ARROW>,^N,^P,^F,^B - select,  <ENTER> - edit,  <ESC> - cancel  
+
+##########################################################################	id=msgbuf,STR,LEFT

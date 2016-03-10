@@ -1,0 +1,72 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">
+<html lang="ja">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta http-equiv="Content-Style-Type" content="text/css">
+<title>pktgen</title>
+<link rel="stylesheet" type="text/css" href="default.css" title="default">
+<script type="text/javascript" language="JavaScript" src="jquery-1.11.1.min.js"></script>
+<script type="text/javascript" language="JavaScript" src="dygraph-combined.js"></script>
+<script type="text/javascript" language="JavaScript" src="pktgen.js"></script>
+</head>
+<body>
+
+<div id="status">-</div>
+<br>
+
+<div id="graph_page">
+<input type="button" name="start" value="start" onclick="StartConnect(event)">
+<input type="button" name="stop"  value="stop"  onclick="StopConnect(event)">
+<input type="button" name="clear"  value="clearGraph"  onclick="ClearHistory(event)">
+<input type="button" name="clear"  value="clearStatistics"  onclick="ClearStat(event)">
+<br>
+packetsize <input type="button" name="pktsize"  value="64"  onclick="SetPacketSize(event, 64)">
+<input type="button" name="pktsize"  value="128"  onclick="SetPacketSize(event, 128)">
+<input type="button" name="pktsize"  value="250"  onclick="SetPacketSize(event, 250)">
+<input type="button" name="pktsize"  value="500"  onclick="SetPacketSize(event, 500)">
+<input type="button" name="pktsize"  value="750"  onclick="SetPacketSize(event, 750)">
+<input type="button" name="pktsize"  value="1000"  onclick="SetPacketSize(event, 1000)">
+<input type="button" name="pktsize"  value="1250"  onclick="SetPacketSize(event, 1250)">
+<input type="button" name="pktsize"  value="1500"  onclick="SetPacketSize(event, 1500)">
+<br>
+PPS
+<input type="button" name="pps"  value="0"  onclick="SetPPS(event, 0)">
+<input type="button" name="pps"  value="500"  onclick="SetPPS(event, 500)">
+<input type="button" name="pps"  value="1k"  onclick="SetPPS(event, 1000)">
+<input type="button" name="pps"  value="2k"  onclick="SetPPS(event, 2000)">
+<input type="button" name="pps"  value="5k"  onclick="SetPPS(event, 5000)">
+<input type="button" name="pps"  value="10k"  onclick="SetPPS(event, 10000)">
+<input type="button" name="pps"  value="20k"  onclick="SetPPS(event, 20000)">
+<input type="button" name="pps"  value="50k"  onclick="SetPPS(event, 50000)">
+<input type="button" name="pps"  value="70k"  onclick="SetPPS(event, 70000)">
+<input type="button" name="pps"  value="80k"  onclick="SetPPS(event, 80000)">
+<input type="button" name="pps"  value="100k"  onclick="SetPPS(event, 100000)">
+<input type="button" name="pps"  value="120k"  onclick="SetPPS(event, 120000)">
+<input type="button" name="pps"  value="150k"  onclick="SetPPS(event, 150000)">
+<input type="button" name="pps"  value="200k"  onclick="SetPPS(event, 200000)">
+<input type="button" name="pps"  value="300k"  onclick="SetPPS(event, 300000)">
+<input type="button" name="pps"  value="500k"  onclick="SetPPS(event, 500000)">
+<input type="button" name="pps"  value="800k"  onclick="SetPPS(event, 800000)">
+<input type="button" name="pps"  value="1M"  onclick="SetPPS(event, 1000000)">
+<input type="button" name="pps"  value="2M"  onclick="SetPPS(event, 2000000)">
+<input type="button" name="pps"  value="3M"  onclick="SetPPS(event, 3000000)">
+<input type="button" name="pps"  value="5M"  onclick="SetPPS(event, 5000000)">
+<br>
+<div id="pps_g" style="width:800px; height:250px;"></div>
+<br>
+<div id="drop_g" style="width:800px; height:100px;"></div>
+<br>
+<div id="bps_g" style="width:800px; height:200px;"></div>
+<br>
+<div id="pktsize_g" style="width:800px; height:125px;"></div>
+<br>
+<div id="statistics"></div>
+</div>
+
+<div id="log_page">
+<textarea style="width: 100%" id="log" rows=32 readonly></textarea>
+</div>
+
+
+</body>
+</html>

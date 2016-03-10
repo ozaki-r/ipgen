@@ -1,0 +1,242 @@
+#!/usr/local/bin/perl
+
+use strict;
+use warnings;
+#use Data::Dumper;
+
+for my $file (@ARGV) {
+	layout_generator($file);
+}
+
+
+
+sub layout_generator {
+	my $file = shift;
+
+	open(FILE, $file) or die "open: $file: $!\n";
+
+	my @items;
+	my $template_str = '';
+
+	while (<FILE>) {
+		chop;
+		my $lineno = $.;
+		my ($template, $control) = split(/\t+/, $_, 2);
+		if (defined($control)) {
+			my @items_at_line;
+			my @controls;
+			if (defined($control)) {
+				@controls = split(/\t+/, $control);
+				for (@controls) {
+					push(@items_at_line, parse_control($_));
+				}
+			}
+
+			$template =~ s/ *$//;
+
+			my @forms;
+			$template =~ s/(#+)/push(@forms, my $form = parse_form($lineno, $`, $&)); " " x $form->{width};/seg;
+
+			if ($#items_at_line != $#forms) {
+				die "$ARGV:$.: number of form and number of control is not equal\n";
+			}
+
+			for (0 .. $#items_at_line) {
+				while (my ($key, $value) = each(%{$forms[$_]})) {
+					$items_at_line[$_]->{$key} = $value;
+				}
+			}
+			push(@items, @items_at_line);
+		} else {
+			$template = $_;
+		}
+		$template_str .= $template . "\n";
+	}
+	close(FILE);
+
+	output_source($file, $template_str, @items);
+	print "-" x 80, "\n";
+	print $template_str;
+	print "-" x 80, "\n";
+}
+
+
+sub output_source {
+	my $file = shift;
+	my $template = shift;
+	my @items = @_;
+
+	(my $filename = $file) =~ s/\.layout$//s;
+
+	open(SOURCE, ">${filename}_item.c") or die "open: ${filename}_item.c: $!\n";
+	open(HEADER, ">${filename}_item.h") or die "open: ${filename}_item.h: $!\n";
+
+	warn "generating ${filename}_item.c and ${filename}_item.h\n";
+
+
+	my $symbol = sprintf("%s", lc($filename));
+	$symbol =~ s/[^a-z_]/_/sg;
+	my $SYMBOL = uc($symbol);
+
+	print HEADER <<_DEFS_;
+/*
+ * THIS FILE AUTOMATICALLY GENERATED.  DO NOT EDIT.
+ */
+#ifndef __${SYMBOL}_ITEM_H__
+#define __${SYMBOL}_ITEM_H__
+
+#include "item.h"
+
+_DEFS_
+	for (0 .. $#items) {
+		printf HEADER "#define ITEMLIST_ID_%s		%d\n", uc($items[$_]->{id}), $_;
+	}
+	printf HEADER "#define ITEMLIST_ID_MAX		%d\n", $#items;
+	printf HEADER "#define ITEMLIST_ID_NITEMS	%d\n", $#items + 1;
+	print HEADER "\n";
+	print HEADER "\n";
+	print HEADER "extern struct item ${symbol}_items[];\n";
+	print HEADER "extern const char ${symbol}_template[];\n";
+	print HEADER "extern int ${symbol}_template_line;\n";
+	print HEADER "extern int ${symbol}_template_column;\n";
+	print HEADER "\n";
+
+
+	print SOURCE <<_DEFS_;
+/*
+ * THIS FILE AUTOMATICALLY GENERATED.  DO NOT EDIT.
+ */
+_DEFS_
+
+	print SOURCE "#include \"item.h\"\n";
+	print SOURCE "#include \"${filename}_item.h\"\n";
+	print SOURCE "\n";
+
+	printf SOURCE "int ${symbol}_template_line = %d;\n", linecount($template);
+	printf SOURCE "int ${symbol}_template_column = %d;\n", maxcolumn($template);
+	print SOURCE "const char ${symbol}_template[] =\n";
+	for (split(/\n/, $template)) {
+		s/\\/\\\\/sg;
+		s/"/\\"/sg;
+		s/%/%%/sg;
+
+		printf SOURCE "	\"%s\\n\"\n", $_;
+	}
+	print SOURCE "	\"\";\n\n";
+
+	print SOURCE "struct item ${symbol}_items[] = {\n";
+	for (0 .. $#items) {
+		print SOURCE output_item_c($items[$_]);
+		print SOURCE (($_ != $#items) ? ",\n" : "\n");
+	}
+	print SOURCE "};\n";
+
+	print HEADER "#endif /* __${SYMBOL}_ITEM_H__ */\n";
+
+	close(HEADER);
+	close(SOURCE);
+}
+
+sub output_item_c {
+	my $item = shift;
+
+#	print STDERR Dumper($item);
+
+	my @flags;
+	$item->{align} = 'right' unless (exists($item->{align}));
+	push(@flags, "ITEMFLAGS_LEFTALIGN")  if ($item->{align} eq 'left');
+	push(@flags, "ITEMFLAGS_EDITABLE")  if (exists $item->{editable});
+	push(@flags, "ITEMFLAGS_BUTTON")  if (exists $item->{button});
+	push(@flags, "ITEMFLAGS_RADIO")  if (exists $item->{radio});
+	my $flags = ($#flags == -1) ? 0 : join("|", @flags);
+
+	my $type = sprintf("ITEMTYPE_%s", $item->{type});
+
+
+	my $output = sprintf(<<__ITEM__,
+	{
+		.id = ITEMLIST_ID_%s,
+		.type = $type,
+		.flags = $flags,
+		.x = $item->{x},
+		.y = $item->{y},
+		.w = $item->{width}
+	}
+__ITEM__
+		uc($item->{id})
+	);
+
+	chop($output);
+	$output;
+}
+
+
+sub parse_control {
+	my $params = shift;
+	my $item;
+
+	my @params = split(/,/, $params);
+
+	for (@params) {
+		if (m/^([^=]+)=(.*)$/) {
+			$item->{$1} = $2;
+		} elsif ($_ eq 'LEFT') {
+			$item->{align} = 'left';
+		} elsif ($_ eq 'RIGHT') {
+			$item->{align} = 'right';
+		} elsif ($_ eq 'BUTTON') {
+			$item->{button} = 1;
+			$item->{editable} = 1;
+			$item->{type} = 'STR';
+		} elsif ($_ eq 'RADIO') {
+			$item->{radio} = 1;
+			$item->{editable} = 1;
+			$item->{type} = 'STR';
+		} elsif ($_ eq 'EDIT') {
+			$item->{editable} = 1;
+		} elsif ($_ eq 'U64') {
+			$item->{type} = 'UINT64';
+		} elsif ($_ eq 'U32') {
+			$item->{type} = 'UINT32';
+		} elsif ($_ eq 'U16') {
+			$item->{type} = 'UINT16';
+		} elsif ($_ eq 'U8') {
+			$item->{type} = 'UINT8';
+		} elsif ($_ eq 'STR') {
+			$item->{type} = 'STR';
+		} elsif ($_ eq 'DBL' or $_ eq 'DOUBLE') {
+			$item->{type} = 'DOUBLE';
+		}
+		$item->{type} = 'NULL' unless (exists $item->{type});
+	}
+
+	$item;
+}
+
+sub parse_form {
+	my ($lineno, $prematch, $match) = @_;
+	my $result;
+
+	$result->{x} = length($prematch);
+	$result->{y} = $lineno - 1;
+	$result->{width} = length($match);
+
+	$result;
+}
+
+sub linecount {
+	my $str = shift;
+
+	$str =~ tr/\n/\n/s;
+}
+
+sub maxcolumn {
+	my $str = shift;
+
+	my $maxcol = 0;
+	for (split(/\n/, $str)) {
+		$maxcol = length($_) if (length($_) > $maxcol);
+	}
+	$maxcol;
+}
+

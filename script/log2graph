@@ -1,0 +1,114 @@
+#!/usr/local/bin/perl
+
+use strict;
+use warnings;
+use Data::Dumper;
+use JSON::XS;
+
+my $RXifno = 0;
+my $TXifno = 1;
+
+
+my $logobj;
+while (<>) {
+	chop;
+	push(@$logobj, decode_json $_);
+}
+
+
+my $per_pktsize_results;
+my $result;
+for my $log (@$logobj) {
+	my $t = $log->{time};
+
+#	print Dumper($log);
+
+
+	if (($log->{statistics}[$TXifno]->{TX} < 10) &&
+	    ($log->{statistics}[$TXifno]->{RX} < 10) &&
+	    ($log->{statistics}[$RXifno]->{TX} < 10) &&
+	    ($log->{statistics}[$RXifno]->{RX} < 10)) {
+		# reset statistics
+		if (exists($result->{duration})) {
+			push(@{$per_pktsize_results->{$result->{packetsize}}}, makeresult($result));
+			undef $result;
+		}
+	}
+
+	if ($log->{statistics}[$TXifno]->{TX}) {
+		$result->{TX} = $log->{statistics}[$TXifno]->{TX};
+	}
+	if ($log->{statistics}[$RXifno]->{RX}) {
+		$result->{RX} = $log->{statistics}[$RXifno]->{RX};
+	}
+
+	if (!$result->{inprogress}) {
+		if ($log->{statistics}[$TXifno]->{TXppsconfig} != 0) {
+			$result->{inprogress} = 1;
+			$result->{starttime} = $log->{time};
+			$result->{TXppsconfig} = $log->{statistics}[$TXifno]->{TXppsconfig};
+			$result->{packetsize} = $log->{statistics}[$TXifno]->{packetsize};
+		}
+	} else {
+		if ($log->{statistics}[$TXifno]->{TXppsconfig} == 0) {
+			$result->{inprogress} = 0;
+			$result->{endtime} = $log->{time};
+			$result->{duration} = $result->{endtime} - $result->{starttime};
+		}
+	}
+}
+
+
+# show result
+for (sort { $a <=> $b } keys(%$per_pktsize_results)) {
+	my $r = $per_pktsize_results->{$_};
+
+#	print Dumper($r);
+
+	print "\n";
+	print "---- [pktsize $r->[0]->{packetsize}] --------------------------------------------------------\n";
+	for (@$r) {
+		printf "RX/TX = %7d /%7d pps,  ", $_->{RXpps}, $_->{TXpps};
+#		printf "<%d>", $_->{TXppsconfig};
+		printf "%4dM /", $_->{RXbps} / 1000000 + 0.5;
+		printf "%4dMbps ", $_->{TXbps} / 1000000 + 0.5;
+		print "|";
+		print "#" x ($_->{RXbps} / 1000000 / 10);
+
+		printf " %.1f%%", $_->{utilization};
+		print "\n";
+#		print Dumper($_);
+	}
+}
+
+
+
+sub pktsize2framesize {
+	my $pktsize = shift;	# 46 - 1500
+
+	# IFG(12) + PREAMBLE(8) + MAC(6+6) + MACTYPE(2) + PKTSIZE(46..1500) + FCS(4)
+	(12 + 8 + 14 + $pktsize + 4);
+}
+
+sub makeresult {
+	my $r = shift;
+	my $result;
+
+#	print Dumper($r);
+
+	my $RXpps = $r->{RX} / $r->{duration};
+	my $TXpps = $r->{TX} / $r->{duration};
+	my $ratio = $RXpps / $TXpps;
+
+#	printf "%d	%.2f	%.2f	%.2f\n", $r->{packetsize}, $TXpps, $RXpps, $ratio * 100;
+	$result->{packetsize} = $r->{packetsize};
+	$result->{TXppsconfig} = $r->{TXppsconfig};
+
+	$result->{RXpps} = $RXpps;
+	$result->{RXbps} = $RXpps * pktsize2framesize($r->{packetsize}) * 8;
+	$result->{TXpps} = $TXpps;
+	$result->{TXbps} = $TXpps * pktsize2framesize($r->{packetsize}) * 8;
+	$result->{utilization} = $ratio * 100;
+
+	$result;
+}

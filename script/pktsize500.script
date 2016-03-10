@@ -1,0 +1,45 @@
+#sec	cmd	pktsize	pps or Mbps
+#------ ------- ------- -------------
+11	tx1	500	100		# warming-up
+2	tx1	0	0
+2	reset
+
+11	tx1	500	100Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	200Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	300Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	400Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	500Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	600Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	700Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	800Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	900Mbps
+2	tx1	0	0
+2	reset
+
+11	tx1	500	1000Mbps
+2	tx1	0	0
+2	reset
