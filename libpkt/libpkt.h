@@ -63,15 +63,18 @@ struct arppkt {
 	} __packed arp;
 } __packed;
 
-struct neighbor_discovery {
+struct ndpkt {
 	struct ether_header eheader;
 	struct ip6_hdr ip6;
 	union {
+		struct icmp6_hdr nd_icmp6;
 		struct nd_neighbor_solicit nd_solicit;
 		struct nd_neighbor_advert nd_advert;
 	} nd;
 #define nd_solicit	nd.nd_solicit
 #define nd_advert	nd.nd_advert
+#define nd_icmp6	nd.nd_icmp6
+	uint8_t opt[8];
 } __packed;
 
 static inline unsigned int align(unsigned int n, unsigned int a)
@@ -142,7 +145,7 @@ int ip4pkt_test_cksum(char *, unsigned int);
 /* ip6pkt.c */
 int ip6pkt_neighbor_parse(char *, int *, struct ether_addr *, struct in6_addr *);
 int ip6pkt_neighbor_solicit(char *, const struct ether_addr *, struct in6_addr *, struct in6_addr *);
-int ip6pkt_neighbor_discovery(char *, const char *, u_char *, struct in6_addr *, struct in6_addr *);
+int ip6pkt_neighbor_solicit_reply(char *, const char *, u_char *, struct in6_addr *);
 int ip6pkt_icmp6_template(char *, unsigned int);
 int ip6pkt_icmp6_echoreply(char *, const char *, unsigned int);
 int ip6pkt_icmp6_type(char *, unsigned int);

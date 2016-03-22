@@ -65,7 +65,7 @@
 #define	DEFAULT_IFG		12	/* Inter Packet Gap */
 #define	DEFAULT_PREAMBLE	(7 + 1)	/* preamble + SDF */
 #define	FCS			4
-#define	ETHHDRSIZE		(6 + 6 + 2)
+#define	ETHHDRSIZE		sizeof(struct ether_header)
 #define	PKTSIZE2FRAMESIZE(x)	((x) + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS)
 #define	CALC_MBPS(pktsize, pps)	\
 	((PKTSIZE2FRAMESIZE((pktsize) + ETHHDRSIZE) * (pps)) * 8.0 / 1000 / 1000)
@@ -77,7 +77,7 @@
 static void rfc2544_showresult(void);
 static void quit(void);
 
-double ipgen_version = 1.21;
+double ipgen_version = 1.23;
 
 #define DISPLAY_UPDATE_HZ	20
 #define DEFAULT_PPS_HZ		1000
@@ -131,13 +131,13 @@ int opt_flowsort = 0;
 int opt_flowdump = 0;
 char *opt_flowlist = NULL;
 
-int min_pktsize = 46;	/* udp4:46, tcp4:58, udp6:66, tcp6:78 */
+int min_pktsize = 46;	/* not include ether-header. udp4:46, tcp4:58, udp6:66, tcp6:78 */
 
 int force_redraw_screen = 0;
 int do_quit = 0;
 
 struct genscript *genscript;
-FILE *logfp;
+int logfd = -1;
 
 struct itemlist *itemlist;
 char msgbuf[1024];
@@ -164,7 +164,7 @@ struct interface {
 	char ifname[32];
 	char decorated_ifname[64];
 	char twiddle[32];
-	unsigned int pktsize;
+	int promisc_save;
 
 	struct {
 		uint64_t tx_last;
@@ -177,8 +177,8 @@ struct interface {
 		uint64_t rx_byte_delta;
 		double tx_Mbps;
 		double rx_Mbps;
-		uint64_t tx_etc;	/* arpreply, icmp-echoreply, etc */
-		uint64_t tx;		/* include tx_etc */
+		uint64_t tx_other;	/* arpreply, icmp-echoreply, etc */
+		uint64_t tx;		/* include tx_other */
 		uint64_t rx;		/* not include rx_* */
 		uint64_t rx_flow;
 		uint64_t rx_arp;
@@ -194,16 +194,22 @@ struct interface {
 
 		uint64_t rx_seqdrop;
 		uint64_t rx_seqdrop_last;
+		uint64_t rx_seqdrop_delta;
 		uint64_t rx_dup;
 		uint64_t rx_dup_last;
+		uint64_t rx_dup_delta;
 		uint64_t rx_reorder;
 		uint64_t rx_reorder_last;
+		uint64_t rx_reorder_delta;
 		uint64_t rx_seqdrop_flow;
 		uint64_t rx_seqdrop_flow_last;
+		uint64_t rx_seqdrop_flow_delta;
 		uint64_t rx_dup_flow;
 		uint64_t rx_dup_flow_last;
+		uint64_t rx_dup_flow_delta;
 		uint64_t rx_reorder_flow;
 		uint64_t rx_reorder_flow_last;
+		uint64_t rx_reorder_flow_delta;
 
 		uint64_t tx_byte;
 		uint64_t rx_byte;
@@ -224,6 +230,7 @@ struct interface {
 	uint64_t sequence_tx;			/* transmit sequence number */
 	uint64_t *sequence_tx_perflow;		/* transmit sequence number per flow*/
 
+	unsigned int pktsize;	/* not include ether-header nor FCS */
 	uint32_t transmit_pps;
 	uint32_t transmit_pps_max;
 	uint32_t transmit_txhz;
@@ -361,9 +368,9 @@ touchup_tx_packet(char *buf, int ifno)
 
 		if (tuple->saddr.af == AF_INET) {
 			if (opt_udp)
-				memcpy(buf, pktbuffer_ipv4_udp[ifno], interface[ifno].pktsize + sizeof(struct ether_header));
+				memcpy(buf, pktbuffer_ipv4_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
 			else
-				memcpy(buf, pktbuffer_ipv4_tcp[ifno], interface[ifno].pktsize + sizeof(struct ether_header));
+				memcpy(buf, pktbuffer_ipv4_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
 
 			ip4pkt_src(buf, tuple->saddr.a.addr4.s_addr);
 			ip4pkt_dst(buf, tuple->daddr.a.addr4.s_addr);
@@ -378,9 +385,9 @@ touchup_tx_packet(char *buf, int ifno)
 			ipv6 = 0;
 		} else {
 			if (opt_udp)
-				memcpy(buf, pktbuffer_ipv6_udp[ifno], interface[ifno].pktsize + sizeof(struct ether_header));
+				memcpy(buf, pktbuffer_ipv6_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
 			else
-				memcpy(buf, pktbuffer_ipv6_tcp[ifno], interface[ifno].pktsize + sizeof(struct ether_header));
+				memcpy(buf, pktbuffer_ipv6_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
 
 			ip6pkt_src(buf, &tuple->saddr.a.addr6);
 			ip6pkt_dst(buf, &tuple->daddr.a.addr6);
@@ -416,7 +423,7 @@ packet_generator(char *buf, int ifno)
 	touchup_tx_packet(buf, ifno);
 
 	if (opt_debug != NULL)
-		tcpdumpfile_output(debug_tcpdump_fd, buf, interface[ifno].pktsize + sizeof(struct ether_header));
+		tcpdumpfile_output(debug_tcpdump_fd, buf, interface[ifno].pktsize + ETHHDRSIZE);
 
 	return interface[ifno].pktsize;
 }
@@ -665,11 +672,11 @@ interface_up(const char *ifname)
 }
 
 void
-interface_wait_linkup(const char *ifname, int verbose)
+interface_wait_linkup(const char *ifname)
 {
 	int i;
 
-	if (!verbose && interface_is_active(ifname))
+	if (interface_is_active(ifname))
 		return;
 
 	printf("%s: waiting link up.", ifname);
@@ -704,27 +711,72 @@ interface_setup(int ifno, const char *ifname)
 	if (memcmp(eth_zero, &interface[ifno].gweaddr, ETHER_ADDR_LEN) == 0) {
 		/* need to resolv arp */
 		struct ether_addr *mac;
+		char *addrstr = NULL;
 
-		interface_wait_linkup(interface[ifno].ifname, 0);
+		interface_wait_linkup(interface[ifno].ifname);
 
-		mac = arpresolv(ifname, &interface[ifno].ipaddr, &interface[ifno].gwaddr);
+		switch (interface[ifno].af_gwaddr) {
+		case AF_INET:
+			mac = arpresolv(ifname, &interface[ifno].ipaddr, &interface[ifno].gwaddr);
+			addrstr = ip4_sprintf(&interface[ifno].gwaddr);
+			break;
+		case AF_INET6:
+			mac = ndpresolv(ifname, &interface[ifno].ip6addr, &interface[ifno].gw6addr);
+			addrstr = ip6_sprintf(&interface[ifno].gw6addr);
+			break;
+		default:
+			fprintf(stderr, "unknown address family to resolve mac-address of gateway\n");
+			exit(1);
+		}
+
 		if (mac == NULL) {
-			fprintf(stderr, "cannot resolve arp. mac-address of gateway:%s on %s is unknown\n",
-			    inet_ntoa(interface[ifno].gwaddr), ifname);
+			fprintf(stderr, "cannot resolve arp/ndp. mac-address of gateway:%s on %s is unknown\n",
+			    addrstr, ifname);
 			exit(1);
 		}
 
 		memcpy(&interface[ifno].gweaddr, mac, ETHER_ADDR_LEN);
 
-		fprintf(stderr, "arp resolved. %s on %s = %s\n",
-		    inet_ntoa(interface[ifno].gwaddr),
+		fprintf(stderr, "arp/ndp resolved. %s on %s = %s\n",
+		    addrstr,
 		    interface[ifno].ifname,
 		    ether_ntoa(&interface[ifno].gweaddr));
 	}
 }
 
 void
-interface_open(int ifno, const char *ifname)
+interface_promisc(int ifno, const char *ifname, int enable, int *old)
+{
+	struct ifreq ifr;
+	int flags, rc;
+
+	memset(&ifr, 0, sizeof(ifr));
+	strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+	rc = ioctl(interface[ifno].nm_desc->fd, SIOCGIFFLAGS, (caddr_t)&ifr);
+	if (rc == -1) {
+		fprintf(stderr, "netmap: ioctl: SIOCGIFFLAGS: %s\n", strerror(errno));
+		return;
+	}
+
+	flags = (ifr.ifr_flags & 0xffff) | (ifr.ifr_flagshigh << 16);
+
+	if (old != NULL)
+		*old = (flags & IFF_PPROMISC);
+
+	if (enable)
+		flags |= IFF_PPROMISC;
+	else
+		flags &= ~IFF_PPROMISC;
+	ifr.ifr_flags = flags & 0xffff;
+	ifr.ifr_flagshigh = flags >> 16;
+
+	rc = ioctl(interface[ifno].nm_desc->fd, SIOCSIFFLAGS, (caddr_t)&ifr);
+	if (rc == -1)
+		fprintf(stderr, "netmap: ioctl: SIOCSIFFLAGS: %s\n", strerror(errno));
+}
+
+void
+interface_open(int ifno)
 {
 	struct nmreq nmreq;
 
@@ -732,7 +784,7 @@ interface_open(int ifno, const char *ifname)
 
 	char *netmapname = malloc(128);
 	memset(netmapname, 0, 128);
-	sprintf(netmapname, "netmap:%s-0", ifname);
+	sprintf(netmapname, "netmap:%s-0", interface[ifno].ifname);
 
 	interface[ifno].nm_desc = nm_open(netmapname, &nmreq, 0, NULL);
 	if (interface[ifno].nm_desc == NULL) {
@@ -740,20 +792,26 @@ interface_open(int ifno, const char *ifname)
 		exit(1);
 	}
 
+	if (use_ipv6)
+		interface_promisc(ifno, interface[ifno].ifname, true, &interface[ifno].promisc_save);
+
 	interface[ifno].seqchecker = seqcheck_new();
 	interface[ifno].opened = 1;
 }
 
 void
-interface_close(int idx)
+interface_close(int ifno)
 {
-	nm_close(interface[idx].nm_desc);
-	reset_ipg(interface[idx].ifname);
+	if (use_ipv6)
+		interface_promisc(ifno, interface[ifno].ifname, interface[ifno].promisc_save, NULL);
 
-	interface[idx].opened = 0;
+	nm_close(interface[ifno].nm_desc);
+	reset_ipg(interface[ifno].ifname);
 
-	if (interface[idx].gwaddr.s_addr != 0) {
-		memset(&interface[idx].gweaddr, 0, ETHER_ADDR_LEN);
+	interface[ifno].opened = 0;
+
+	if (interface[ifno].gwaddr.s_addr != 0) {
+		memset(&interface[ifno].gweaddr, 0, ETHER_ADDR_LEN);
 	}
 }
 
@@ -780,7 +838,7 @@ interface_load_transmit_packet(int ifno, char *buf, uint16_t *lenp)
 		*lenp = p->len;
 		pbuf_free(p);
 
-		interface[ifno].counter.tx_etc++;
+		interface[ifno].counter.tx_other++;
 
 		return 2;	/* control packet */
 
@@ -853,6 +911,38 @@ arp_handler(int ifno, char *pkt)
 			    interface[ifno].eaddr.octet,
 			    interface[ifno].ipaddr.s_addr,
 			    interface[ifno].ipaddr_mask.s_addr);
+
+			if (pktlen > 0) {
+				p->len = pktlen;
+				pbufq_enqueue(&interface[ifno].pbufq, p);
+			} else {
+				pbuf_free(p);
+			}
+		}
+	}
+}
+
+void
+ndp_handler(int ifno, char *pkt)
+{
+	int pktlen;
+	struct ether_addr eaddr;
+	struct in6_addr ip6addr;
+	int type;
+
+	ip6pkt_neighbor_parse(pkt, &type, &eaddr, &ip6addr);
+
+	/* must to reply neighbor-advertize */
+	if (type == ND_NEIGHBOR_SOLICIT) {
+		struct pbuf *p;
+
+		p = pbuf_alloc(ETHER_MAX_LEN);
+		if (p == NULL) {
+			fprintf(stderr, "cannot allocate buffer for arp request\n");
+		} else {
+			pktlen = ip6pkt_neighbor_solicit_reply(p->data, pkt,
+			    interface[ifno].eaddr.octet,
+			    &interface[ifno].ip6addr);
 
 			if (pktlen > 0) {
 				p->len = pktlen;
@@ -944,6 +1034,12 @@ interface_receive(int ifno)
 						icmp6echo_handler(ifno, buf, len);
 #endif
 						continue;
+
+					case ND_NEIGHBOR_SOLICIT:
+						interface[ifno].counter.rx_arp++;
+						ndp_handler(ifno, buf);
+						continue;
+
 					default:
 						interface[ifno].counter.rx_icmpother++;
 						printf("icmp6 receive: type=%d, code=%d\n",
@@ -1063,7 +1159,7 @@ interface_receive(int ifno)
 						dumpstr(buf, len);
 					}
 #endif
-			}
+				}
 			}
 		}
 
@@ -1133,10 +1229,6 @@ interface_transmit(int ifno)
 static int
 interface_statistics_json(int ifno, char *buf, int buflen)
 {
-	unsigned long long txdelta_pkt, rxdelta_pkt;
-	unsigned long long txdelta_byte, rxdelta_byte;
-	long long rxdelta_drop, rxdelta_dup, rxdelta_reorder;
-	long long rxdelta_flow_drop, rxdelta_flow_dup, rxdelta_flow_reorder;
 	char buf_ipaddr[INET_ADDRSTRLEN], buf_eaddr[sizeof("00:00:00:00:00:00")];
 	char buf_gwaddr[INET_ADDRSTRLEN], buf_gweaddr[sizeof("00:00:00:00:00:00")];
 
@@ -1144,20 +1236,6 @@ interface_statistics_json(int ifno, char *buf, int buflen)
 	inet_ntop(AF_INET, &interface[ifno].gwaddr, buf_gwaddr, sizeof(buf_gwaddr));
 	ether_ntoa_r(&interface[ifno].eaddr, buf_eaddr);
 	ether_ntoa_r(&interface[ifno].gweaddr, buf_gweaddr);
-
-	txdelta_pkt = interface[ifno].counter.tx - interface[ifno].counter.tx_last;
-	rxdelta_pkt = interface[ifno].counter.rx - interface[ifno].counter.rx_last;
-	txdelta_byte = interface[ifno].counter.tx_byte - interface[ifno].counter.tx_byte_last;
-	rxdelta_byte = interface[ifno].counter.rx_byte - interface[ifno].counter.rx_byte_last;
-
-	rxdelta_drop = interface[ifno].counter.rx_seqdrop - interface[ifno].counter.rx_seqdrop_last;
-	rxdelta_dup = interface[ifno].counter.rx_dup - interface[ifno].counter.rx_dup_last;
-	rxdelta_reorder = interface[ifno].counter.rx_reorder - interface[ifno].counter.rx_reorder_last;
-
-	rxdelta_flow_drop = interface[ifno].counter.rx_seqdrop_flow - interface[ifno].counter.rx_seqdrop_flow_last;
-	rxdelta_flow_dup = interface[ifno].counter.rx_dup_flow - interface[ifno].counter.rx_dup_flow_last;
-	rxdelta_flow_reorder = interface[ifno].counter.rx_reorder_flow - interface[ifno].counter.rx_reorder_flow_last;
-
 
 	return snprintf(buf, buflen,
 	    "{"
@@ -1178,7 +1256,7 @@ interface_statistics_json(int ifno, char *buf, int buflen)
 	    "\"RXbps\":%llu,"
 	    "\"TXunderrun\":%llu,"
 	    "\"RXdrop\":%llu,"
-	    "\"RXdropps\":%lld,"
+	    "\"RXdropps\":%llu,"
 	    "\"RXdup\":%llu,"
 	    "\"RXreorder\":%llu,"
 
@@ -1206,13 +1284,13 @@ interface_statistics_json(int ifno, char *buf, int buflen)
 	    (unsigned long long)interface[ifno].counter.tx,
 	    (unsigned long long)interface[ifno].counter.rx,
 	    (unsigned long long)interface[ifno].transmit_pps,
-	    (unsigned long long)txdelta_pkt,
-	    (unsigned long long)rxdelta_pkt,
-	    (unsigned long long)txdelta_byte * 8,
-	    (unsigned long long)rxdelta_byte * 8,
+	    (unsigned long long)interface[ifno].counter.tx_delta,
+	    (unsigned long long)interface[ifno].counter.rx_delta,
+	    (unsigned long long)interface[ifno].counter.tx_byte_delta * 8,
+	    (unsigned long long)interface[ifno].counter.rx_byte_delta * 8,
 	    (unsigned long long)interface[ifno].counter.tx_underrun,
 	    (unsigned long long)interface[ifno].counter.rx_seqdrop,
-	    (long long)rxdelta_drop,
+	    (unsigned long long)interface[ifno].counter.rx_seqdrop_delta,
 	    (unsigned long long)interface[ifno].counter.rx_dup,
 	    (unsigned long long)interface[ifno].counter.rx_reorder,
 
@@ -1232,21 +1310,59 @@ interface_statistics_json(int ifno, char *buf, int buflen)
 	);
 }
 
+#define JSON_BUFSIZE	(1024 * 32)
+char jsonbuf[JSON_BUFSIZE];
+int jsonbuf_len;
+
+static void
+build_json_statistics(void)
+{
+	int len;
+
+	/* generate json statistics string */
+	len = 0;
+	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, "{\"apiversion\":\"1.2\"");
+	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, ",\"time\":%.2f",
+	    currenttime.tv_sec + currenttime.tv_nsec / 1000000000.0);
+
+	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, ",\"statistics\":[");
+	if (len <= JSON_BUFSIZE) {
+		len += interface_statistics_json(0, jsonbuf + len , JSON_BUFSIZE - len);
+		if (len <= JSON_BUFSIZE) {
+			jsonbuf[len++] = ',';
+			len += interface_statistics_json(1, jsonbuf + len, JSON_BUFSIZE - len);
+			len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, "]}\n");
+		}
+	}
+	jsonbuf_len = len;
+}
+
+/* be careful. broadcast_json_statistics() called from signal handler */
+static void
+broadcast_json_statistics(void)
+{
+	if (logfd >= 0)
+		write(logfd, jsonbuf, jsonbuf_len);
+
+	webserv_stream_broadcast(jsonbuf, jsonbuf_len);
+}
+
 static void
 sighandler_alrm(int signo)
 {
-	static char jsonbuf[1024 * 32];
 	static unsigned int nhz = 0;
-	int i, len;
+	int i;
 	uint64_t x;
 
 	if ((nhz + 1) >= pps_hz) {
+		/* this block called 1Hz */
+
 		clock_gettime(CLOCK_MONOTONIC, &currenttime);
 
-#if 1
 		/* update dropcounter */
 		for (i = 0; i < 2; i++) {
 			if (interface[i].opened) {
+
 				interface[i].counter.rx_seqdrop = 
 				    seqcheck_dropcount(interface[i].seqchecker);
 				interface[i].counter.rx_dup =
@@ -1260,51 +1376,43 @@ sighandler_alrm(int signo)
 				    seqcheck_dupcount(interface[i].seqchecker_flowtotal);
 				interface[i].counter.rx_reorder_flow = 
 				    seqcheck_reordercount(interface[i].seqchecker_flowtotal);
+
+
+				/* update delta */
+				interface[i].counter.tx_delta = interface[i].counter.tx - interface[i].counter.tx_last;
+				interface[i].counter.tx_last = interface[i].counter.tx;
+				interface[i].counter.rx_delta = interface[i].counter.rx - interface[i].counter.rx_last;
+				interface[i].counter.rx_last = interface[i].counter.rx;
+
+				interface[i].counter.tx_byte_delta = interface[i].counter.tx_byte - interface[i].counter.tx_byte_last;
+				interface[i].counter.tx_byte_last = interface[i].counter.tx_byte;
+				interface[i].counter.rx_byte_delta = interface[i].counter.rx_byte - interface[i].counter.rx_byte_last;
+				interface[i].counter.rx_byte_last = interface[i].counter.rx_byte;
+
+				interface[i].counter.tx_Mbps = interface[i].counter.tx_byte_delta * 8.0 / 1000 / 1000;
+				interface[i].counter.rx_Mbps = interface[i].counter.rx_byte_delta * 8.0 / 1000 / 1000;
+
+
+				interface[i].counter.rx_seqdrop_delta = interface[i].counter.rx_seqdrop - interface[i].counter.rx_seqdrop_last;
+				interface[i].counter.rx_seqdrop_last = interface[i].counter.rx_seqdrop;
+				interface[i].counter.rx_dup_delta = interface[i].counter.rx_dup - interface[i].counter.rx_dup_last;
+				interface[i].counter.rx_dup_last = interface[i].counter.rx_dup;
+				interface[i].counter.rx_reorder_delta = interface[i].counter.rx_reorder - interface[i].counter.rx_reorder_last;
+				interface[i].counter.rx_reorder_last = interface[i].counter.rx_reorder;
+
+				interface[i].counter.rx_seqdrop_flow_delta = interface[i].counter.rx_seqdrop_flow - interface[i].counter.rx_seqdrop_flow_last;
+				interface[i].counter.rx_seqdrop_flow_last = interface[i].counter.rx_seqdrop_flow;
+				interface[i].counter.rx_dup_flow_delta = interface[i].counter.rx_dup_flow - interface[i].counter.rx_dup_flow_last;
+				interface[i].counter.rx_dup_flow_last = interface[i].counter.rx_dup_flow;
+				interface[i].counter.rx_reorder_flow_delta = interface[i].counter.rx_reorder_flow - interface[i].counter.rx_reorder_flow_last;
+				interface[i].counter.rx_reorder_flow_last = interface[i].counter.rx_reorder_flow;
 			}
 		}
-#endif
 
-		/* generate json statistics string */
-		len = 0;
-		len += snprintf(jsonbuf + len, sizeof(jsonbuf) - len, "{\"apiversion\":\"1.2\"");
-		len += snprintf(jsonbuf + len, sizeof(jsonbuf) - len, ",\"time\":%.2f",
-		    currenttime.tv_sec + currenttime.tv_nsec / 1000000000.0);
-
-		len += snprintf(jsonbuf + len, sizeof(jsonbuf) - len, ",\"statistics\":[");
-		if (len <= sizeof(jsonbuf)) {
-			len += interface_statistics_json(0, jsonbuf + len , sizeof(jsonbuf) - len);
-			if (len <= sizeof(jsonbuf)) {
-				jsonbuf[len++] = ',';
-				len += interface_statistics_json(1, jsonbuf + len, sizeof(jsonbuf) - len);
-				len += snprintf(jsonbuf + len, sizeof(jsonbuf) - len, "]}\n");
-
-				if (logfp != NULL) {
-					fputs(jsonbuf, logfp);
-					fflush(logfp);
-				}
-
-				webserv_stream_broadcast(jsonbuf, len);
-			}
-		}
-
-		for (i = 0; i < 2; i++) {
-			if (!interface[i].opened)
-				continue;
-
-			interface[i].counter.tx_delta = interface[i].counter.tx - interface[i].counter.tx_last;
-			interface[i].counter.rx_delta = interface[i].counter.rx - interface[i].counter.rx_last;
-			interface[i].counter.tx_last = interface[i].counter.tx;
-			interface[i].counter.rx_last = interface[i].counter.rx;
-
-			interface[i].counter.tx_byte_delta = interface[i].counter.tx_byte - interface[i].counter.tx_byte_last;
-			interface[i].counter.rx_byte_delta = interface[i].counter.rx_byte - interface[i].counter.rx_byte_last;
-			interface[i].counter.tx_byte_last = interface[i].counter.tx_byte;
-			interface[i].counter.rx_byte_last = interface[i].counter.rx_byte;
-
-			interface[i].counter.tx_Mbps = interface[i].counter.tx_byte_delta * 8.0 / 1000 / 1000;
-			interface[i].counter.rx_Mbps = interface[i].counter.rx_byte_delta * 8.0 / 1000 / 1000;
-
-			interface[i].counter.rx_seqdrop_last = interface[i].counter.rx_seqdrop;
+		/* need to update statistics string buffer in json? */
+		if ((logfd >= 0) || (webserv_need_broadcast() != 0)) {
+			build_json_statistics();
+			broadcast_json_statistics();
 		}
 	}
 
@@ -1378,9 +1486,9 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: ipgen [options]\n");
-	fprintf(stderr, "	-R <ifname>,<gateway-addr>[,<address>[/<prefix>]]\n");
+	fprintf(stderr, "	-R <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n");
 	fprintf(stderr, "					set RX interface\n");
-	fprintf(stderr, "	-T <ifname>,<gateway-addr>[,<address>[/<prefix>]]\n");
+	fprintf(stderr, "	-T <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n");
 	fprintf(stderr, "					set TX interface\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "	-H <Hz>				specify control Hz (default: 1000)\n");
@@ -2045,8 +2153,8 @@ control_init_items(struct itemlist *itemlist)
 
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_TX, NULL, &interface[0].counter.tx);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_TX, NULL, &interface[1].counter.tx);
-	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_TX_ETC, NULL, &interface[0].counter.tx_etc);
-	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_TX_ETC, NULL, &interface[1].counter.tx_etc);
+	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_TX_OTHER, NULL, &interface[0].counter.tx_other);
+	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_TX_OTHER, NULL, &interface[1].counter.tx_other);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_TX_UNDERRUN, NULL, &interface[0].counter.tx_underrun);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_RX_UNDERRUN, NULL, &interface[1].counter.tx_underrun);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_RX, NULL, &interface[0].counter.rx);
@@ -2175,6 +2283,9 @@ static void
 evt_timeout_callback(evutil_socket_t fd, short event, void *arg)
 {
 	struct itemlist *itemlist;
+	static int nth = 0;
+
+	nth++;
 
 	if (do_quit) {
 		quit();
@@ -2182,7 +2293,7 @@ evt_timeout_callback(evutil_socket_t fd, short event, void *arg)
 	}
 
 	itemlist = (struct itemlist *)arg;
-	control_interval(itemlist);	/* call frequency is DISPLAY_UPDATE_HZ */
+	control_interval(itemlist);
 }
 
 
@@ -2316,10 +2427,10 @@ main(int argc, char *argv[])
 		printf("igb(4) TIPG feature supported\n");
 	}
 #endif
+	printf("\n");
 
 	/* XXX */
 	seq_magic = getpid() & 0xffff;
-
 
 	memset(ifname, 0, sizeof(ifname));
 
@@ -2350,11 +2461,16 @@ main(int argc, char *argv[])
 				/*
 				 * parse
 				 *    "-Tem0,10.0.0.1"
+				 *    "-Tem0,fd00::1"
 				 *    "-Tem0,aa:bb:cc:dd:ee:ff"
 				 * or "-Tem0,10.0.0.1,10.0.0.2"
+				 * or "-Tem0,fd00:1,fd00::2"
 				 * or "-Tem0,aa:bb:cc:dd:ee:ff,10.0.0.2"
+				 * or "-Tem0,aa:bb:cc:dd:ee:ff,fd00::2"
 				 * or "-Tem0,10.0.0.1,10.0.0.2/24"
+				 * or "-Tem0,fd00::1,fd00::2/64"
 				 * or "-Tem0,aa:bb:cc:dd:ee:ff,10.0.0.2/24"
+				 * or "-Tem0,aa:bb:cc:dd:ee:ff,fd00::2/64"
 				 */
 				p = strsep(&s, ",");
 				if (s == NULL)
@@ -2370,7 +2486,6 @@ main(int argc, char *argv[])
 				} else if (ether_aton_r(p, &interface[ifno].gweaddr) == NULL) {
 					fprintf(stderr, "Cannot resolve: %s\n", p);
 					usage();
-					exit(1);
 				}
 
 				if (s != NULL) {
@@ -2385,7 +2500,6 @@ main(int argc, char *argv[])
 					} else {
 						fprintf(stderr, "Cannot resolve: %s\n", p);
 						usage();
-						exit(1);
 					}
 
 					if (s == NULL) {
@@ -2396,14 +2510,12 @@ main(int argc, char *argv[])
 							if (use_ipv6) {
 								fprintf(stderr, "funny address and mask: %s/%s\n", p, s);
 								usage();
-								exit(1);
 							}
 							inet_pton(AF_INET, s, &interface[ifno].ipaddr_mask);
 						} else if (strchr(s, ':')) {
 							if (!use_ipv6) {
 								fprintf(stderr, "funny address and mask: %s/%s\n", p, s);
 								usage();
-								exit(1);
 							}
 							inet_pton(AF_INET6, s, &interface[ifno].ip6addr_mask);
 						} else {
@@ -2413,7 +2525,6 @@ main(int argc, char *argv[])
 								if (masklen > 32) {
 									fprintf(stderr, "illegal address mask: %s\n", s);
 									usage();
-									exit(1);
 								}
 								interface[ifno].ipaddr_mask.s_addr = htonl(0xffffffff << (32 - masklen));
 								break;
@@ -2421,7 +2532,6 @@ main(int argc, char *argv[])
 								if (masklen > 128) {
 									fprintf(stderr, "illegal address mask: %s\n", s);
 									usage();
-									exit(1);
 								}
 								prefix2in6addr(masklen, &interface[ifno].ip6addr_mask);
 								break;
@@ -2444,8 +2554,8 @@ main(int argc, char *argv[])
 			break;
 
 		case 'L':
-			logfp = fopen(optarg, "w");
-			if (logfp == NULL) {
+			logfd = open(optarg, O_WRONLY|O_CREAT|O_TRUNC, 0666);
+			if (logfd < 0) {
 				err(2, "%s", optarg);
 			}
 			break;
@@ -2479,7 +2589,6 @@ main(int argc, char *argv[])
 				sz = strtol(optarg, (char **)NULL, 10);
 				if (sz < 46 || sz > 1500) {
 					usage();
-					exit(1);
 				}
 				interface[0].pktsize = sz;
 				interface[1].pktsize = sz;
@@ -2579,13 +2688,11 @@ main(int argc, char *argv[])
 		    opt_srcport_begin, opt_srcport_end,
 		    opt_dstport_begin, opt_dstport_end);
 		usage();
-		exit(1);
 	}
 	if ((opt_srcport_begin > opt_srcport_end) ||
 	    (opt_dstport_begin > opt_dstport_end)) {
 		fprintf(stderr, "illegal port order\n");
 		usage();
-		exit(1);
 	}
 
 	if (opt_debug != NULL) {
@@ -2619,7 +2726,6 @@ main(int argc, char *argv[])
 	if (opt_txonly && opt_rxonly) {
 		fprintf(stderr, "specify interface with -T and -R\n");
 		usage();
-		exit(1);
 	}
 
 	for (i = 0; i < 2; i++) {
@@ -2629,10 +2735,10 @@ main(int argc, char *argv[])
 			continue;
 
 		if ((memcmp(eth_zero, &interface[i].gweaddr, ETHER_ADDR_LEN) == 0) &&
-		    (interface[i].gwaddr.s_addr == 0)) {
+		    ipv4_iszero(&interface[i].gwaddr) &&
+		    ipv6_iszero(&interface[i].gw6addr)) {
 			fprintf(stderr, "gateway address is unknown. specify gw address with -T and -R\n");
 			usage();
-			exit(1);
 		}
 	}
 
@@ -2901,11 +3007,23 @@ main(int argc, char *argv[])
 				    opt_dstport_begin, opt_dstport_end);
 				if (rc != 0)
 					exit(1);
-
 			} else {
-				fprintf(stderr, "no address specified on %s and %s\n",
-				    interface[0].ifname, interface[1].ifname);
-				exit(1);
+				/* no address information. use 0.0.0.0-0.0.0.0 */
+				rc = addresslist_append(interface[1].adrlist, opt_tcp ? IPPROTO_TCP : IPPROTO_UDP,
+				    interface[1].ipaddr, interface[1].ipaddr,
+				    interface[0].ipaddr, interface[0].ipaddr,
+				    opt_srcport_begin, opt_srcport_end,
+				    opt_dstport_begin, opt_dstport_end);
+				if (rc != 0)
+					exit(1);
+
+				rc = addresslist_append(interface[0].adrlist, opt_tcp ? IPPROTO_TCP : IPPROTO_UDP,
+				    interface[0].ipaddr, interface[0].ipaddr,
+				    interface[1].ipaddr, interface[1].ipaddr,
+				    opt_srcport_begin, opt_srcport_end,
+				    opt_dstport_begin, opt_dstport_end);
+				if (rc != 0)
+					exit(1);
 			}
 		}
 	}
@@ -2945,23 +3063,23 @@ main(int argc, char *argv[])
 	    ifname[1],
 	    opt_fulldup ? "<->" : "->",
 	    ifname[0]);
-	printf("IP pktsize %d, %u pps, %u Mbps (%u bps)\n", interface[0].pktsize, interface[0].transmit_pps,
-	    PKTSIZE2FRAMESIZE(interface[0].pktsize + ETHHDRSIZE) * 8 * interface[0].transmit_pps / 1000 / 1000,
-	    PKTSIZE2FRAMESIZE(interface[0].pktsize + ETHHDRSIZE) * 8 * interface[0].transmit_pps);
+	printf("IP pktsize %d, %u pps, %lu Mbps (%lu bps)\n", interface[0].pktsize, interface[0].transmit_pps,
+	    (unsigned long)PKTSIZE2FRAMESIZE(interface[0].pktsize + ETHHDRSIZE) * 8 * interface[0].transmit_pps / 1000 / 1000,
+	    (unsigned long)PKTSIZE2FRAMESIZE(interface[0].pktsize + ETHHDRSIZE) * 8 * interface[0].transmit_pps);
 
 
 	/*
 	 * open netmap devices
 	 */
 	if (!opt_txonly)
-		interface_open(0, ifname[0]);	/* RX */
+		interface_open(0);	/* RX */
 	if (!opt_rxonly)
-		interface_open(1, ifname[1]);	/* TX */
+		interface_open(1);	/* TX */
 
 	if (!opt_rxonly)
-		interface_wait_linkup(ifname[1], 1);	/* TX */
+		interface_wait_linkup(ifname[1]);	/* TX */
 	if (!opt_txonly)
-		interface_wait_linkup(ifname[0], 1);	/* RX */
+		interface_wait_linkup(ifname[0]);	/* RX */
 
 	for (i = 0; i < 2; i++) {
 		char inetbuf1[INET6_ADDRSTRLEN];
@@ -3038,13 +3156,13 @@ main(int argc, char *argv[])
 
 
 	for (i = 0; i < 2; i++) {
-		ip4pkt_udp_template(pktbuffer_ipv4_udp[i], 1500 + sizeof(struct ether_header));
+		ip4pkt_udp_template(pktbuffer_ipv4_udp[i], 1500 + ETHHDRSIZE);
 		build_template_packet_ipv4(i, pktbuffer_ipv4_udp[i]);
-		ip4pkt_tcp_template(pktbuffer_ipv4_tcp[i], 1500 + sizeof(struct ether_header));
+		ip4pkt_tcp_template(pktbuffer_ipv4_tcp[i], 1500 + ETHHDRSIZE);
 		build_template_packet_ipv4(i, pktbuffer_ipv4_tcp[i]);
-		ip6pkt_udp_template(pktbuffer_ipv6_udp[i], 1500 + sizeof(struct ether_header));
+		ip6pkt_udp_template(pktbuffer_ipv6_udp[i], 1500 + ETHHDRSIZE);
 		build_template_packet_ipv6(i, pktbuffer_ipv6_udp[i]);
-		ip6pkt_tcp_template(pktbuffer_ipv6_tcp[i], 1500 + sizeof(struct ether_header));
+		ip6pkt_tcp_template(pktbuffer_ipv6_tcp[i], 1500 + ETHHDRSIZE);
 		build_template_packet_ipv6(i, pktbuffer_ipv6_tcp[i]);
 	}
 

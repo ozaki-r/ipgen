@@ -42,6 +42,8 @@
 #include <net/bpf.h>
 #include <net/route.h>
 #include <netinet/in.h>
+#include <netinet/ip6.h>
+#include <netinet/icmp6.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <stdio.h>
@@ -54,21 +56,22 @@
 #include <ctype.h>
 #include <err.h>
 
+#include "libpkt/libpkt.h"
+
+
 #include "arpresolv.h"
 
 #undef DEBUG
-
-#ifdef DEBUG
-static void dumpstr(const uint8_t *, size_t);
-#endif
 
 static int bpfread_and_exec(int (*)(void *, unsigned char *, int, const char *), void *, int, const char *, unsigned char *, int);
 
 static int bpfslot(void);
 static void arpquery(int, const char *, struct ether_addr *, struct in_addr *, struct in_addr *);
+static void ndsolicit(int, const char *, struct ether_addr *, struct in6_addr *, struct in6_addr *);
 static int bpfopen(const char *, int, unsigned int *);
 static void bpfclose(int);
 static int bpf_arpfilter(int);
+static int bpf_ndpfilter(int);
 static int getifinfo(const char *, int *, uint8_t *);
 
 
@@ -96,25 +99,13 @@ static int getifinfo(const char *, int *, uint8_t *);
 		}							\
 	} while (/* CONSTCOND */ 0)
 
-/* ethernet arp packet */
-struct arppkt {
-	struct ether_header eheader;
-	struct {
-		uint16_t ar_hrd;			/* +0x00 */
-		uint16_t ar_pro;			/* +0x02 */
-		uint8_t ar_hln;				/* +0x04 */
-		uint8_t ar_pln;				/* +0x05 */
-		uint16_t ar_op;				/* +0x06 */
-		uint8_t ar_sha[ETHER_ADDR_LEN];		/* +0x08 */
-		struct in_addr ar_spa;			/* +0x0e */
-		uint8_t ar_tha[ETHER_ADDR_LEN];		/* +0x12 */
-		struct in_addr ar_tpa;			/* +0x18 */
-							/* +0x1c */
-	} __packed arp;
-} __packed;
-
 struct recvarp_arg {
 	struct in_addr src;
+	struct ether_addr src_eaddr;
+};
+
+struct recvnd_arg {
+	struct in6_addr src;
 	struct ether_addr src_eaddr;
 };
 
@@ -137,15 +128,36 @@ struct bpf_insn arp_reply_filter[] = {
 	BPF_STMT(BPF_RET + BPF_K, 0),	/* return 0 */
 };
 
+struct bpf_insn nd_filter[] = {
+	/* check ethertype */
+	BPF_STMT(BPF_LD + BPF_H + BPF_ABS, ETHER_ADDR_LEN * 2),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ETHERTYPE_IPV6, 0, 8),
+
+	/* fetch ip6_hdr->ip6_nxt */
+	BPF_STMT(BPF_LD + BPF_B + BPF_ABS, ETHER_HDR_LEN + 6),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, IPPROTO_ICMPV6, 0, 6),
+
+	/* fetch icmp6_hdr->icmp6_type */
+	BPF_STMT(BPF_LD + BPF_B + BPF_ABS, ETHER_HDR_LEN + sizeof(struct ip6_hdr)),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ND_ROUTER_SOLICIT, 3, 0),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ND_ROUTER_ADVERT, 2, 0),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ND_NEIGHBOR_SOLICIT, 1, 0),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ND_NEIGHBOR_ADVERT, 0, 1),
+
+	BPF_STMT(BPF_RET + BPF_K, -1),	/* return -1 (whole of packet) */
+	BPF_STMT(BPF_RET + BPF_K, 0),	/* return 0 (nomatch) */
+};
+
 #define BPFBUFSIZE	(1024 * 4)
 unsigned char bpfbuf[BPFBUFSIZE];
 unsigned int bpfbuflen = BPFBUFSIZE;
 
-#if 0
+#ifdef DEBUG
 static int
 usage(void)
 {
-	fprintf(stderr, "usage: arpresolv <interface> <ipv4addr>\n");
+	fprintf(stderr, "usage: arpresolv <interface> <ipv4address>\n");
+	fprintf(stderr, "usage: ndresolv <interface> <ipv6address>\n");
 	return 99;
 }
 
@@ -169,7 +181,7 @@ getaddr(const char *ifname, const struct in_addr *dstaddr, struct in_addr *srcad
 			if (src.s_addr == 0)
 				src = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr;
 
-			/* find addr with netmask */
+			/* lookup addr with netmask */
 			if (dstaddr != NULL) {
 				mask = ((struct sockaddr_in *)ifa->ifa_netmask)->sin_addr;
 				if ((ntohl(mask.s_addr) > ntohl(curmask.s_addr)) &&
@@ -190,31 +202,87 @@ getaddr(const char *ifname, const struct in_addr *dstaddr, struct in_addr *srcad
 	return (src.s_addr == 0);
 }
 
+static inline int
+ip6_iszero(struct in6_addr *addr)
+{
+	int i;
+	for (i = 0; i < 16; i++) {
+		if (addr->s6_addr[0] != 0)
+			return 0;
+	}
+	return 1;
+}
+
+static int
+getaddr6(const char *ifname, const struct in6_addr *dstaddr, struct in6_addr *srcaddr)
+{
+	int rc;
+	struct ifaddrs *ifa0, *ifa;
+	struct in6_addr src;
+
+	memset(&src, 0, sizeof(src));
+
+	rc = getifaddrs(&ifa0);
+	ifa = ifa0;
+	for (; ifa != NULL; ifa = ifa->ifa_next) {
+		if ((strcmp(ifa->ifa_name, ifname) == 0) &&
+		    (ifa->ifa_addr->sa_family == AF_INET6)) {
+
+			if (ip6_iszero(&src))
+				src = ((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr;
+
+			/* lookup address that has same prefix */
+			if (dstaddr != NULL) {
+				if (memcmp(&((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr, dstaddr, 8) == 0) {
+					memcpy(&src, &((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr, 16);
+				}
+			}
+		}
+	}
+
+	if (ifa0 != NULL)
+		freeifaddrs(ifa0);
+
+	*srcaddr = src;
+
+	return ip6_iszero(&src);
+}
+
 int
 main(int argc, char *argv[])
 {
 	int rc;
 	char *ifname;
 	struct in_addr src, dst;
+	struct in6_addr src6, dst6;
 	struct ether_addr *eth;
+	char buf[INET6_ADDRSTRLEN];
 
 	if (argc != 3)
 		return usage();
 
 	ifname = argv[1];
-	if (inet_aton(argv[2], &dst) == 0) {
+	if (inet_pton(AF_INET, argv[2], &dst) == 1) {
+		rc = getaddr(ifname, &dst, &src);
+		if (rc != 0) {
+			fprintf(stderr, "%s: %s: source address is unknown\n",
+			    ifname, inet_ntoa(dst));
+			return 3;
+		}
+		eth = arpresolv(ifname, &src, &dst);
+	} else if (inet_pton(AF_INET6, argv[2], &dst6) == 1) {
+		rc = getaddr6(ifname, &dst6, &src6);
+		if (rc != 0) {
+			fprintf(stderr, "%s: %s: source address is unknown\n",
+			    ifname, inet_ntop(AF_INET6, &dst6, buf, sizeof(buf)));
+			return 3;
+		}
+		eth = ndpresolv(ifname, &src6, &dst6);
+	} else {
 		printf("%s: invalid host\n", argv[2]);
 		return 2;
 	}
 
-	rc = getaddr(ifname, &dst, &src);
-	if (rc != 0) {
-		fprintf(stderr, "%s: %s: source address is unknown\n",
-		    ifname, inet_ntoa(dst));
-		return 3;
-	}
-
-	eth = arpresolv(ifname, &src, &dst);
 	if (eth != NULL) {
 		printf("%s\n", ether_ntoa(eth));
 		return 0;
@@ -231,7 +299,7 @@ recv_arpreply(void *arg, unsigned char *buf, int buflen, const char *ifname)
 
 #ifdef DEBUG
 	fprintf(stderr, "recv_arpreply: %s\n", ifname);
-	dumpstr((uint8_t *)buf, buflen);
+	dumpstr((const char *)buf, buflen);
 #endif
 
 	recvarparg = (struct recvarp_arg *)arg;
@@ -241,6 +309,28 @@ recv_arpreply(void *arg, unsigned char *buf, int buflen, const char *ifname)
 		return 0;
 
 	memcpy(&recvarparg->src_eaddr, (struct ether_addr *)(arppkt->arp.ar_sha), sizeof(struct ether_addr));
+
+	return 1;
+}
+
+static int
+recv_nd(void *arg, unsigned char *buf, int buflen, const char *ifname)
+{
+	struct ndpkt *ndpkt;
+	struct recvnd_arg *recvndarg;
+
+#ifdef DEBUG
+	fprintf(stderr, "recv_nd: %s\n", ifname);
+	dumpstr((const char *)buf, buflen);
+#endif
+
+	recvndarg = (struct recvnd_arg *)arg;
+	ndpkt = (struct ndpkt *)buf;
+
+	if (ndpkt->nd_icmp6.icmp6_type != ND_NEIGHBOR_ADVERT)
+		return 0;
+
+	memcpy(&recvndarg->src_eaddr, &ndpkt->opt[2], sizeof(struct ether_addr));
 
 	return 1;
 }
@@ -297,7 +387,9 @@ arpresolv(const char *ifname, struct in_addr *src, struct in_addr *dst)
 			}
 
 			if (rc == 0) {
-				fprintf(stderr, "arp timeout\n");
+				char buf[INET_ADDRSTRLEN];
+				inet_ntop(AF_INET, dst, buf, sizeof(buf));
+				fprintf(stderr, "%s: %s: arp timeout\n", ifname, buf);
 				break;
 			}
 			if (FD_ISSET(fd, &rfd)) {
@@ -306,6 +398,84 @@ arpresolv(const char *ifname, struct in_addr *src, struct in_addr *dst)
 				arg.src = *dst;
 
 				rc = bpfread_and_exec(recv_arpreply, (void *)&arg, fd, ifname, bpfbuf, bpfbuflen);
+				if (rc != 0) {
+					found = &arg.src_eaddr;
+					break;
+				}
+			}
+		}
+		if (found != NULL)
+			break;
+	}
+
+	bpfclose(fd);
+
+	return found;
+}
+
+struct ether_addr *
+ndpresolv(const char *ifname, struct in6_addr *src, struct in6_addr *dst)
+{
+	fd_set rfd;
+	struct timespec end, lim, now;
+	struct timeval tlim;
+	struct ether_addr macaddr;
+	struct ether_addr *found;
+	int fd, rc, mtu, nretry;
+
+	found = NULL;
+
+	fd = bpfopen(ifname, 0, &bpfbuflen);
+	if (fd < 0) {
+		warn("open: %s", ifname);
+		return NULL;
+	}
+
+	bpf_ndpfilter(fd);
+
+	rc = getifinfo(ifname, &mtu, macaddr.ether_addr_octet);
+	if (rc != 0) {
+		warn("%s", ifname);
+		return NULL;
+	}
+
+	for (nretry = 3; nretry > 0; nretry--) {
+		ndsolicit(fd, ifname, &macaddr, src, dst);
+
+		lim.tv_sec = 1;
+		lim.tv_nsec = 0;
+		clock_gettime(CLOCK_MONOTONIC, &end);
+
+		TIMESPECADD(&lim, &end, &end);
+
+		for (;;) {
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			TIMESPECSUB(&end, &now, &lim);
+			if (lim.tv_sec < 0)
+				break;
+
+			TIMESPEC_TO_TIMEVAL(&tlim, &lim);
+
+			FD_ZERO(&rfd);
+			FD_SET(fd, &rfd);
+			rc = select(fd + 1, &rfd, NULL, NULL, &tlim);
+			if (rc < 0) {
+				err(1, "select");
+				break;
+			}
+
+			if (rc == 0) {
+				char buf[INET6_ADDRSTRLEN];
+				inet_ntop(AF_INET6, dst, buf, sizeof(buf));
+				fprintf(stderr, "%s: [%s]: neighbor solicit timeout\n", ifname, buf);
+				break;
+			}
+			if (FD_ISSET(fd, &rfd)) {
+				static struct recvnd_arg arg;
+				memset(&arg, 0, sizeof(arg));
+				arg.src = *dst;
+
+				rc = bpfread_and_exec(recv_nd, (void *)&arg, fd, ifname, bpfbuf, bpfbuflen);
 				if (rc != 0) {
 					found = &arg.src_eaddr;
 					break;
@@ -358,7 +528,28 @@ bpf_arpfilter(int fd)
 	bpfprog.bf_insns = arp_reply_filter;
 	rc = ioctl(fd, BIOCSETF, &bpfprog);
 	if (rc != 0)
-		warn("ioctl: BIOCSETF");
+		warn("ioctl: BIOCSETF (arp filter)");
+
+	return rc;
+}
+
+static int
+bpf_ndpfilter(int fd)
+{
+	struct bpf_program bpfprog;
+	int rc;
+
+	memset(&bpfprog, 0, sizeof(bpfprog));
+#ifdef nitems
+	bpfprog.bf_len = nitems(nd_filter);
+#else
+	bpfprog.bf_len = __arraycount(nd_filter);
+#endif
+
+	bpfprog.bf_insns = nd_filter;
+	rc = ioctl(fd, BIOCSETF, &bpfprog);
+	if (rc != 0)
+		warn("ioctl: BIOCSETF (ndp filter)");
 
 	return rc;
 }
@@ -497,46 +688,6 @@ getifinfo(const char *ifname, int *mtu, uint8_t *hwaddr)
 	return rc;
 }
 
-#ifdef DEBUG
-static void
-dumpstr(const uint8_t *str, size_t len)
-{
-	const unsigned char *p = (const unsigned char*)str;
-	size_t i = len;
-	char ascii[17];
-	char *ap = ascii;
-
-	while (i > 0) {
-		unsigned char c;
-
-		if (((len - i) & 15) == 0) {
-			printf("%08x:", (unsigned int)(len - i));
-			ap = ascii;
-		}
-
-		c = p[len - i];
-		fprintf(stderr, " %02x", c);
-		i--;
-
-		*ap++ = isprint(c) ? c : '.';
-
-		if (((len - i) & 15) == 0) {
-			*ap = '\0';
-			fprintf(stderr, "  %s\n", ascii);
-		}
-	}
-	*ap = '\0';
-
-	if (len & 0xf) {
-		const char *whitesp =
-		 /* "00 01 02 03 04 05 06 07:08 09 0A 0B 0C 0D 0E 0F " */
-		    "                                                ";
-		i = len % 16;
-		fprintf(stderr, "%s  %s\n", whitesp + (i * 3), ascii);
-	}
-}
-#endif /* DEBUG */
-
 static void
 arpquery(int fd, const char *ifname, struct ether_addr *sha, struct in_addr *src, struct in_addr *dst)
 {
@@ -563,11 +714,28 @@ arpquery(int fd, const char *ifname, struct ether_addr *sha, struct in_addr *src
 
 #ifdef DEBUG
 	fprintf(stderr, "send arp-query on %s\n", ifname);
-	dumpstr((uint8_t *)&aquery, sizeof(aquery));
+	dumpstr((const char *)&aquery, sizeof(aquery));
 #endif
 
 	/* send an arp-query via bpf */
 	write(fd, &aquery, sizeof(aquery));
+}
+
+static void
+ndsolicit(int fd, const char *ifname, struct ether_addr *sha, struct in6_addr *src, struct in6_addr *dst)
+{
+	char pktbuf[LIBPKT_PKTBUFSIZE];
+	unsigned int pktlen;
+
+	pktlen = ip6pkt_neighbor_solicit(pktbuf, sha, src, dst);
+
+#ifdef DEBUG
+	fprintf(stderr, "send nd-solicit on %s\n", ifname);
+	dumpstr((const char *)pktbuf, pktlen);
+#endif
+
+	/* send an arp-query via bpf */
+	write(fd, pktbuf, pktlen);
 }
 
 static int

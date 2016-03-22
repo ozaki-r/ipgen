@@ -4,7 +4,7 @@
                                                                           
   Total Count:                                                            
     TX: ######################## pkt    TX: ###################### pkt    	id=if0_tx,U64			id=if1_tx,U64
-    TX-etc: #################### pkt    TX-etc: ################## pkt    	id=if0_tx_etc,U64		id=if1_tx_etc,U64
+    TX-arp/ndp: ################ pkt    TX-arp/ndp: ############## pkt    	id=if0_tx_other,U64		id=if1_tx_other,U64
     TX-underrun: ############### pkt    TX-underrun: ############# pkt    	id=if0_tx_underrun,U64		id=if1_rx_underrun,U64
     RX: ######################## pkt    RX: ###################### pkt    	id=if0_rx,U64			id=if1_rx,U64
     RX-drop: ################### pkt    RX-drop: ################# pkt    	id=if0_rx_drop,U64		id=if1_rx_drop,U64
@@ -12,7 +12,7 @@
     RX-reorder: ################ pkt    RX-reorder: ############## pkt    	id=if0_rx_reorder,U64		id=if1_rx_reorder,U64
     RX-reorder/flow: ########### pkt    RX-reorder/flow: ######### pkt    	id=if0_rx_reorder_flow,U64	id=if1_rx_reorder_flow,U64
     RX-flowctrl: ############### pkt    RX-flowctrl: ############# pkt    	id=if0_rx_flow,U64		id=if1_rx_flow,U64
-    RX-arp: #################### pkt    RX-arp: ################## pkt    	id=if0_rx_arp,U64		id=if1_rx_arp,U64
+    RX-arp/ndp: ################ pkt    RX-arp/ndp: ############## pkt    	id=if0_rx_arp,U64		id=if1_rx_arp,U64
     RX-icmpecho: ############### pkt    RX-icmpecho: ############# pkt    	id=if0_rx_icmpecho,U64		id=if1_rx_icmpecho,U64
        icmpunreach: ############ pkt       icmpunreach: ########## pkt    	id=if0_rx_icmpunreach,U64	id=if1_rx_icmpunreach,U64
        icmpredirect: ########### pkt       icmpredirect: ######### pkt    	id=if0_rx_icmpredirect,U64	id=if1_rx_icmpredirect,U64

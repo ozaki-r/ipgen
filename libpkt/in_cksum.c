@@ -70,7 +70,7 @@ in6_cksum(struct in6_addr *src, struct in6_addr *dst, int proto, char *data, uns
 	sum += src->s6_addr16[6];
 	sum += src->s6_addr16[7];
 
-	sum = dst->s6_addr16[0];
+	sum += dst->s6_addr16[0];
 	sum += dst->s6_addr16[1];
 	sum += dst->s6_addr16[2];
 	sum += dst->s6_addr16[3];

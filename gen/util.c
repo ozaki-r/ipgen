@@ -59,9 +59,12 @@ prefix2in6addr(int prefix, struct in6_addr *addr)
 	if (prefix > 128)
 		prefix = 128;
 
-	memset(&addr->s6_addr[prefix / 8], 0, 16 - (prefix / 8));
-	memset(addr, 0xff, prefix / 8);
-	addr->s6_addr[prefix / 8] = 0xff << (8 - (prefix & 7));
+	if (prefix < 128)
+		memset(&addr->s6_addr[prefix / 8], 0, 16 - (prefix / 8));
+	if (prefix >= 8)
+		memset(addr, 0xff, prefix / 8);
+	if (prefix < 128)
+		addr->s6_addr[prefix / 8] = 0xff << (8 - (prefix & 7));
 }
 
 unsigned int

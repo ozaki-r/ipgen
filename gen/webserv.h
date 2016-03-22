@@ -50,5 +50,6 @@ int webserv_init(void);
 unsigned int webserv_getclientnum(void);
 struct webserv *webserv_new(int);
 int webserv_stream_broadcast(char *, int);
+int webserv_need_broadcast(void);
 
 #endif /* _WEBSERV_H_ */

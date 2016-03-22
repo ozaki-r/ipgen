@@ -37,25 +37,148 @@
 #include <netinet/tcp.h>
 #include <net/if_arp.h>
 
+/* XXX: from netinet6/in6.h */
+#if BYTE_ORDER == BIG_ENDIAN
+#define IPV6_ADDR_INT32_ONE		1
+#define IPV6_ADDR_INT32_TWO		2
+#define IPV6_ADDR_INT32_MNL		0xff010000
+#define IPV6_ADDR_INT32_MLL		0xff020000
+#define IPV6_ADDR_INT32_SMP		0x0000ffff
+#define IPV6_ADDR_INT16_ULL		0xfe80
+#define IPV6_ADDR_INT16_USL		0xfec0
+#define IPV6_ADDR_INT16_MLL		0xff02
+#elif BYTE_ORDER == LITTLE_ENDIAN
+#define IPV6_ADDR_INT32_ONE		0x01000000
+#define IPV6_ADDR_INT32_TWO		0x02000000
+#define IPV6_ADDR_INT32_MNL		0x000001ff
+#define IPV6_ADDR_INT32_MLL		0x000002ff
+#define IPV6_ADDR_INT32_SMP		0xffff0000
+#define IPV6_ADDR_INT16_ULL		0x80fe
+#define IPV6_ADDR_INT16_USL		0xc0fe
+#define IPV6_ADDR_INT16_MLL		0x02ff
+#endif
+#ifndef s6_addr8
+#define s6_addr8  __u6_addr.__u6_addr8
+#endif
+#ifndef s6_addr16
+#define s6_addr16 __u6_addr.__u6_addr16
+#endif
+#ifndef s6_addr32
+#define s6_addr32 __u6_addr.__u6_addr32
+#endif
+
 int
-ip6pkt_neighbor_parse(char *buf, int *op, struct ether_addr *ha, struct in6_addr *tgt)
+ip6pkt_neighbor_solicit(char *buf, const struct ether_addr *sha, struct in6_addr *addr1, struct in6_addr *addr2)
 {
-	/* XXX: NOTYET */
+	u_int8_t edst[ETHER_ADDR_LEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };	/* XXX: should to use multicast address */
+	struct ndpkt *ndpkt;
+	unsigned int ip6len, protolen;
+	int len;
+	struct in6_addr daddr;
+
+	ndpkt = (struct ndpkt *)buf;
+
+	len = ip6pkt_icmp6_template(buf, sizeof(struct ndpkt));
+	ip6len = len - sizeof(struct ether_header);
+	protolen = ip6len - sizeof(struct ip6_hdr);
+
+	ethpkt_src(buf, (u_char *)sha);
+	ethpkt_dst(buf, edst);
+
+	memset(&daddr, 0, sizeof(daddr));
+	daddr.s6_addr16[0] = IPV6_ADDR_INT16_MLL;
+	daddr.s6_addr16[1] = 0;
+	daddr.s6_addr32[1] = 0;
+	daddr.s6_addr32[2] = IPV6_ADDR_INT32_ONE;
+	daddr.s6_addr32[3] = addr2->s6_addr32[3];
+	daddr.s6_addr8[12] = 0xff;
+
+	ndpkt->ip6.ip6_src = *addr1;
+	ndpkt->ip6.ip6_dst = daddr;
+	ndpkt->nd_icmp6.icmp6_type = ND_NEIGHBOR_SOLICIT;
+	memcpy(&ndpkt->opt[2], sha, ETHER_ADDR_LEN);
+	memcpy(&ndpkt->nd_solicit.nd_ns_target, addr2, sizeof(struct in6_addr));
+	ndpkt->opt[0] = 1;
+	ndpkt->opt[1] = 1;
+
+	ndpkt->nd_icmp6.icmp6_cksum = 0;
+	ndpkt->nd_icmp6.icmp6_cksum = in6_cksum(&ndpkt->ip6.ip6_src, &ndpkt->ip6.ip6_dst, ndpkt->ip6.ip6_nxt, (char *)&ndpkt->nd_icmp6, protolen);
+
+	return len;
+}
+
+int
+ip6pkt_neighbor_parse(char *buf, int *type, struct ether_addr *ha, struct in6_addr *tgt)
+{
+	struct ether_header *eh;
+	struct ip6_hdr *ip6;
+	struct icmp6_hdr *icmp6;
+	struct ndpkt *ndpkt;
+
+	eh = (struct ether_header *)buf;
+	ip6 = (struct ip6_hdr *)(eh + 1);
+	icmp6 = (struct icmp6_hdr *)(ip6 + 1);
+	ndpkt = (struct ndpkt *)icmp6;
+
+	*type = icmp6->icmp6_type;
+	memcpy(ha, eh->ether_shost, ETHER_ADDR_LEN);
+
+	switch (icmp6->icmp6_type) {
+	case ND_NEIGHBOR_SOLICIT:
+		memcpy(tgt, &ndpkt->nd_solicit.nd_ns_target, sizeof(struct in6_addr));
+		break;
+
+	case ND_NEIGHBOR_ADVERT:
+		memcpy(tgt, &ndpkt->nd_advert.nd_na_target, sizeof(struct in6_addr));
+		break;
+
+	default:
+		/* XXX: notyet */
+		break;
+	}
+
 	return 0;
 }
 
 int
-ip6pkt_neighbor_solicit(char *buf, const struct ether_addr *ha, struct in6_addr *addr1, struct in6_addr *addr2)
+ip6pkt_neighbor_solicit_reply(char *buf, const char *solicitbuf, u_char *eaddr, struct in6_addr *addr)
 {
-	/* XXX: NOTYET */
-	return sizeof(struct neighbor_discovery);
-}
+	struct ndpkt *ndpkt, *ondpkt;
+	unsigned int ip6len, protolen;
+	int len;
 
-int
-ip6pkt_neighbor_discovery(char *buf, const char *solicitbuf, u_char *eaddr, struct in6_addr *addr, struct in6_addr *mask)
-{
-	/* XXX: NOTYET */
-	return sizeof(struct neighbor_discovery);
+	ondpkt = (struct ndpkt *)solicitbuf;
+	ndpkt = (struct ndpkt *)buf;
+
+	len = ip6pkt_icmp6_template(buf, sizeof(struct ndpkt));
+	ip6len = len - sizeof(struct ether_header);
+	protolen = ip6len - sizeof(struct ip6_hdr);
+
+	ethpkt_src(buf, eaddr);
+	ethpkt_dst(buf, ondpkt->eheader.ether_shost);
+
+	if (IN6_IS_ADDR_MULTICAST(&ondpkt->ip6.ip6_dst))
+		ndpkt->ip6.ip6_src = ondpkt->nd_solicit.nd_ns_target;
+	else
+		ndpkt->ip6.ip6_src = ondpkt->ip6.ip6_dst;
+
+	ndpkt->ip6.ip6_dst = ondpkt->ip6.ip6_src;
+	ndpkt->nd_icmp6.icmp6_type = ND_NEIGHBOR_ADVERT;
+	ndpkt->nd_icmp6.icmp6_data32[0] = 
+	    ND_NA_FLAG_SOLICITED |
+	    ND_NA_FLAG_OVERRIDE;
+
+	memcpy(&ndpkt->opt[2], eaddr, ETHER_ADDR_LEN);
+	memcpy(&ndpkt->nd_advert.nd_na_target,
+	    &ondpkt->nd_solicit.nd_ns_target,
+	    sizeof(struct in6_addr));
+	ndpkt->opt[0] = 2;
+	ndpkt->opt[1] = 1;
+
+	ndpkt->nd_icmp6.icmp6_cksum = 0;
+	ndpkt->nd_icmp6.icmp6_cksum = in6_cksum(&ndpkt->ip6.ip6_src, &ndpkt->ip6.ip6_dst, ndpkt->ip6.ip6_nxt, (char *)&ndpkt->nd_icmp6, protolen);
+
+	return len;
 }
 
 int
@@ -78,7 +201,7 @@ ip6pkt_icmp6_template(char *buf, unsigned int framelen)
 /*	ip6->ip6_flow = 0;	*/
 	ip6->ip6_plen = htons(protolen);
 	ip6->ip6_nxt = IPPROTO_ICMPV6;
-	ip6->ip6_hlim = 64;
+	ip6->ip6_hlim = 255;
 
 	icmp6 = (struct icmp6_hdr *)(ip6 + 1);
 	icmp6->icmp6_type = 0;
@@ -361,6 +484,15 @@ ip6pkt_srcdst(int srcdst, char *buf, const struct in6_addr *addr)
 			sum = ~tcp->th_sum & 0xffff;
 			sump = &tcp->th_sum;
 		}
+		break;
+	case IPPROTO_ICMPV6:
+		{
+			struct icmp6_hdr *icmp6 = (struct icmp6_hdr *)(ip6 + 1);
+
+			sum = ~icmp6->icmp6_cksum & 0xffff;
+			sump = &icmp6->icmp6_cksum;
+		}
+		break;
 		break;
 	default:
 		return -1;

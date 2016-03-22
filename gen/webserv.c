@@ -439,9 +439,17 @@ webserv_stream(struct webserv *web, char *buf, int len)
 
 	webserv_output(web, buf, len);
 	if (web->oneshot)
-		webserv_destroy(web);
+		shutdown(web->fd, SHUT_RDWR);
 
 	return 0;
+}
+
+int
+webserv_need_broadcast(void)
+{
+	if (TAILQ_EMPTY(&webserv_broadcastlist))
+		return 0;
+	return 1;
 }
 
 int
