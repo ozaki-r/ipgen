@@ -71,13 +71,13 @@
 	((PKTSIZE2FRAMESIZE((pktsize) + ETHHDRSIZE) * (pps)) * 8.0 / 1000 / 1000)
 
 #define	PORT_DEFAULT		9	/* discard port */
-#define MAXFLOWNUM		65536
+#define MAXFLOWNUM		(1024 * 1024)
 
 
 static void rfc2544_showresult(void);
-static void quit(void);
+static void quit(int fromsig);
 
-double ipgen_version = 1.23;
+double ipgen_version = 1.24;
 
 #define DISPLAY_UPDATE_HZ	20
 #define DEFAULT_PPS_HZ		1000
@@ -103,7 +103,9 @@ int opt_tcp = 0;
 int opt_udp = 1;	/* default */
 int opt_ipg = 0;
 int opt_rfc2544 = 0;
+double opt_rfc2544_tolerable_error_rate = 0.0;	/* default 0.00 % */
 int opt_rfc2544_trial_duration = 60;	/* default 60sec */
+int opt_rfc2544_pktsize = 0;		/* default: all range */
 
 
 #ifdef IPG_HACK
@@ -142,8 +144,10 @@ int logfd = -1;
 struct itemlist *itemlist;
 char msgbuf[1024];
 
-pthread_t txrxthread0;
-pthread_t txrxthread1;
+pthread_t txthread0;
+pthread_t rxthread0;
+pthread_t txthread1;
+pthread_t rxthread1;
 pthread_t controlthread;
 
 const uint8_t eth_zero[6] = { 0, 0, 0, 0, 0, 0 };
@@ -329,7 +333,7 @@ in_range(int num, int begin, int end)
 static inline int
 get_flowid_max(int ifno)
 {
-	return addresslist_get_tuplenum(interface[ifno].adrlist);
+	return addresslist_get_tuplenum(interface[ifno].adrlist) - 1;
 }
 
 static inline int
@@ -784,13 +788,18 @@ interface_open(int ifno)
 
 	char *netmapname = malloc(128);
 	memset(netmapname, 0, 128);
-	sprintf(netmapname, "netmap:%s-0", interface[ifno].ifname);
+	sprintf(netmapname, "netmap:%s", interface[ifno].ifname);
 
 	interface[ifno].nm_desc = nm_open(netmapname, &nmreq, 0, NULL);
 	if (interface[ifno].nm_desc == NULL) {
 		fprintf(stderr, "cannot open /dev/netmap\n");
 		exit(1);
 	}
+
+//printf("first_tx_ring = %d\n", interface[ifno].nm_desc->first_tx_ring);
+//printf("last_tx_ring = %d\n", interface[ifno].nm_desc->last_tx_ring);
+//printf("cur_tx_ring = %d\n", interface[ifno].nm_desc->cur_tx_ring);
+//fflush(stdout);
 
 	if (use_ipv6)
 		interface_promisc(ifno, interface[ifno].ifname, true, &interface[ifno].promisc_save);
@@ -805,7 +814,34 @@ interface_close(int ifno)
 	if (use_ipv6)
 		interface_promisc(ifno, interface[ifno].ifname, interface[ifno].promisc_save, NULL);
 
+#if 0	/* XXX */
+	/*
+	 * XXX: freebsd bug? closing netmap file descriptor sometimes cause panic
+	 *
+	 * panic: Bad link elm 0xffff0017e7df500 prev->next != elm
+	 * cpuid = 3
+	 * KDB: stack backtrace:
+	 * db_trace_self_wrapper()
+	 * vpanic()
+	 * panic()
+	 * selfdfree()
+	 * kern_poll()
+	 * sys_poll()
+	 * amd64_syscall()
+	 * Xfast_syscall()
+	 *
+	 */
 	nm_close(interface[ifno].nm_desc);
+#else
+
+	/*
+	 * timeout of poll() in rx_thread_main() is 100ms,
+	 * sleeping 200ms to wait returning from poll().
+	 */
+	usleep(200000);
+	nm_close(interface[ifno].nm_desc);
+#endif
+
 	reset_ipg(interface[ifno].ifname);
 
 	interface[ifno].opened = 0;
@@ -1144,7 +1180,7 @@ interface_receive(int ifno)
 					seq = seqdata->seq;
 					seqflow = seqdata->seq_perflow;
 					flowid = seqdata->seq_flowid;
-					if (get_flowid_max(ifno) > flowid)
+					if (get_flowid_max(ifno) >= flowid)
 						nskip = seqcheck_receive(interface[ifno].seqchecker_perflow[flowid], seqflow);
 
 					nskip = seqcheck_receive(interface[ifno].seqchecker, seq);
@@ -1433,12 +1469,16 @@ sighandler_alrm(int signo)
 }
 
 static void
-quit(void)
+quit(int fromsig)
 {
 	static int quitting = 0;
 
-	if (quitting)
+	if (quitting) {
+		for (;;)
+			pause();
 		return;
+	}
+
 	quitting = 1;
 
 	do_quit = 1;
@@ -1455,13 +1495,15 @@ quit(void)
 	if (opt_rfc2544)
 		rfc2544_showresult();
 
+	if (fromsig)
+		_exit(1);
 	exit(1);
 }
 
 static void
 sighandler_int(int signo)
 {
-	quit();
+	quit(true);
 }
 
 static void
@@ -1523,14 +1565,46 @@ usage(void)
 	fprintf(stderr, "	-F <nflow>			limit <nflow>\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "	--rfc2544			rfc2544 test mode\n");
+	fprintf(stderr, "	--rfc2544-tolerable-error-rate <percent>\n");
+	fprintf(stderr, "					rfc2544 tolerable error rate (default: 0)\n");
 	fprintf(stderr, "	--rfc2544-trial-duration <sec>	rfc2544 trial duration time (default: 60)\n");
+	fprintf(stderr, "	--rfc2544-pktsize <size>	test only specified pktsize. (default: 46-1500)\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "	-D <file>			debug. dump all generated packets to <file> as tcpdump file format\n");
 	exit(1);
 }
 
 void *
-txrx_thread_main(void *arg)
+tx_thread_main(void *arg)
+{
+	int ifno;
+	int i, j;
+
+	(void)pthread_sigmask(SIG_BLOCK, &used_sigset, NULL);
+
+	ifno = *(int *)arg;
+
+	while (do_quit == 0) {
+		if (interface[ifno].need_reset_statistics) {
+			interface[ifno].need_reset_statistics = 0;
+			memset(&interface[ifno].counter, 0, sizeof(interface[ifno].counter));
+			seqcheck_clear(interface[ifno].seqchecker);
+			seqcheck_clear(interface[ifno].seqchecker_flowtotal);
+			j = get_flownum(ifno);
+			for (i = 0; i < j; i++) {
+				seqcheck_clear(interface[ifno].seqchecker_perflow[i]);
+			}
+		}
+
+		interface_transmit(ifno);
+		ioctl(interface[ifno].nm_desc->fd, NIOCTXSYNC, NULL);
+	}
+
+	return NULL;
+}
+
+void *
+rx_thread_main(void *arg)
 {
 	struct pollfd pollfd[1];
 	int rc;
@@ -1548,17 +1622,7 @@ txrx_thread_main(void *arg)
 		pollfd[0].events = POLLIN;
 		pollfd[0].revents = 0;
 
-		if (interface[ifno].need_reset_statistics) {
-			interface[ifno].need_reset_statistics = 0;
-			memset(&interface[ifno].counter, 0, sizeof(interface[ifno].counter));
-			seqcheck_clear(interface[ifno].seqchecker);
-		}
-
-		if (interface_need_transmit(ifno))
-			pollfd[0].events |= POLLOUT;
-
-#if 1
-		rc = poll(pollfd, 1, 0);
+		rc = poll(pollfd, 1, 100);
 		if (rc < 0) {
 			if (errno == EINTR)
 				continue;
@@ -1566,18 +1630,15 @@ txrx_thread_main(void *arg)
 			printf("poll: %s\n", strerror(errno));
 			continue;
 		}
-#else
-		pollfd[0].revents = POLLIN|POLLOUT;
-#endif
 
 		if (pollfd[0].revents & POLLIN)
 			interface_receive(ifno);
-		if (pollfd[0].revents & POLLOUT)
-			interface_transmit(ifno);
 	}
 
 	return NULL;
 }
+
+
 
 void
 genscript_play(int unsigned n)
@@ -1594,7 +1655,7 @@ genscript_play(int unsigned n)
 		nth_test++;
 		genitem = genscript_get_item(genscript, nth_test);
 		if (genitem == NULL) {
-			quit();
+			quit(false);
 			return;
 		}
 
@@ -1643,9 +1704,12 @@ control_tty_handler(int fd, struct itemlist *itemlist)
 
 	if (opt_rfc2544) {
 		if ((c == 'q') || (c == 'Q'))
-			quit();
-		sprintf(msgbuf, "cannot control in rfc2544 mode");
-		return;
+			quit(false);
+
+		if (c != 0x0c) {	/*  ^L */
+			sprintf(msgbuf, "cannot control in rfc2544 mode");
+			return;
+		}
 	}
 
 	grabbed = itemlist_ttyhandler(itemlist, c);
@@ -1656,7 +1720,7 @@ control_tty_handler(int fd, struct itemlist *itemlist)
 	switch (c) {
 	case 'q':
 	case 'Q':
-		quit();
+		quit(false);
 		break;
 
 	case 'z':
@@ -1689,14 +1753,14 @@ struct rfc2544_work {
 };
 
 struct rfc2544_work rfc2544_work[] = {
-	{	.pktsize = 64 - 18,	.minpps = 1,	.maxpps = 1488095	},
-	{	.pktsize = 128 - 18,	.minpps = 1,	.maxpps = 844594	},
-	{	.pktsize = 256 - 18,	.minpps = 1,	.maxpps = 452898	},
-	{	.pktsize = 512 - 18,	.minpps = 1,	.maxpps = 234962	},
-	{	.pktsize = 1024 - 18,	.minpps = 1,	.maxpps = 119731	},
-	{	.pktsize = 1280 - 18,	.minpps = 1,	.maxpps = 96153		},
-	{	.pktsize = 1408 - 18,	.minpps = 1,	.maxpps = 87535		},
-	{	.pktsize = 1518 - 18,	.minpps = 1,	.maxpps = 81274		}
+	{	.pktsize = 64 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 1488095	},
+	{	.pktsize = 128 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 844594	},
+	{	.pktsize = 256 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 452898	},
+	{	.pktsize = 512 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 234962	},
+	{	.pktsize = 1024 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 119731	},
+	{	.pktsize = 1280 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 96153		},
+	{	.pktsize = 1408 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 87535		},
+	{	.pktsize = 1518 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 81274		}
 };
 
 static int rfc2544_nthtest = 0;
@@ -1714,6 +1778,15 @@ typedef enum {
 	RFC2544_DONE0,
 	RFC2544_DONE
 } rfc2544_state_t;
+
+
+void
+rfc2544_set_pktsize(unsigned int pktsize)
+{
+	rfc2544_ntest = 1;
+	rfc2544_work[0].pktsize = pktsize;
+	rfc2544_work[0].maxpps = 1000000000 / 8 / (pktsize + 18 + DEFAULT_IFG + DEFAULT_PREAMBLE);
+}
 
 void
 rfc2544_showresult(void)
@@ -1748,6 +1821,9 @@ rfc2544_showresult(void)
 	 */
 
 	printf("\n");
+	printf("\n");
+	printf("rfc2544 tolerable error rate: %.2f%%\n", opt_rfc2544_tolerable_error_rate);
+	printf("rfc2544 trial duration: %d sec\n", opt_rfc2544_trial_duration);
 	printf("\n");
 	printf("framesize|0M  100M 200M 300M 400M 500M 600M 700M 800M 900M 1Gbps\n");
 	printf("---------+----+----+----+----+----+----+----+----+----+----+\n");
@@ -1803,7 +1879,7 @@ rfc2544_test(int unsigned n)
 {
 	static rfc2544_state_t state = RFC2544_START;
 	static struct timespec statetime;
-	int measure_done;
+	int measure_done, do_down_pps;
 
 	switch (state) {
 	case RFC2544_START:
@@ -1896,20 +1972,17 @@ rfc2544_test(int unsigned n)
 
 	case RFC2544_MEASURING:
 		measure_done = 0;
+		do_down_pps = 0;
 
-		if (interface[0].counter.rx_seqdrop > 0) {
+		if ((interface[0].counter.rx != 0) &&
+		    (((interface[0].counter.rx_seqdrop * 100.0) / interface[0].counter.rx) > opt_rfc2544_tolerable_error_rate)) {
+
 			/* dropped... */
 			if (rfc2544_work[rfc2544_nthtest].minpps >= rfc2544_work[rfc2544_nthtest].curpps - 1) {
 				rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].minpps;
 				measure_done = 1;
-
 			} else {
-				rfc2544_down_pps();
-				setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
-				statistics_clear();
-				memcpy(&statetime, &currenttime, sizeof(struct timeval));
-				statetime.tv_sec += 1;	/* wait 2sec */
-				state = RFC2544_PPSCHANGE;
+				do_down_pps = 1;
 			}
 		} else if (timespeccmp(&currenttime, &statetime, >)) {
 			/* no drop. OK! */
@@ -1920,6 +1993,19 @@ rfc2544_test(int unsigned n)
 				setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
 				state = RFC2544_MEASURING0;
 			}
+		}
+
+		if (measure_done && (interface[0].counter.rx_seqdrop == 0))
+			do_down_pps = 1;
+
+		if (do_down_pps) {
+			rfc2544_down_pps();
+			setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
+			statistics_clear();
+			memcpy(&statetime, &currenttime, sizeof(struct timeval));
+			statetime.tv_sec += 1;	/* wait 2sec */
+			state = RFC2544_PPSCHANGE;
+			measure_done = 0;
 		}
 
 		if (measure_done) {
@@ -2288,7 +2374,7 @@ evt_timeout_callback(evutil_socket_t fd, short event, void *arg)
 	nth++;
 
 	if (do_quit) {
-		quit();
+		quit(false);
 		return;
 	}
 
@@ -2391,22 +2477,24 @@ gentest_main(void)
 }
 
 static struct option longopts[] = {
-	{	"ipg",		no_argument,		0,	0	},
-	{	"burst",	no_argument,		0,	0	},
-	{	"allnet",	no_argument,		0,	0	},
-	{	"fragment",	no_argument,		0,	0	},
-	{	"tcp",		no_argument,		0,	0	},
-	{	"udp",		no_argument,		0,	0	},
-	{	"sport",	required_argument,	0,	0	},
-	{	"dport",	required_argument,	0,	0	},
-	{	"saddr",	required_argument,	0,	0	},
-	{	"daddr",	required_argument,	0,	0	},
-	{	"flowlist",	required_argument,	0,	0	},
-	{	"flowsort",	no_argument,		0,	0	},
-	{	"flowdump",	no_argument,		0,	0	},
-	{	"rfc2544",	no_argument,		0,	0	},
+	{	"ipg",				no_argument,		0,	0	},
+	{	"burst",			no_argument,		0,	0	},
+	{	"allnet",			no_argument,		0,	0	},
+	{	"fragment",			no_argument,		0,	0	},
+	{	"tcp",				no_argument,		0,	0	},
+	{	"udp",				no_argument,		0,	0	},
+	{	"sport",			required_argument,	0,	0	},
+	{	"dport",			required_argument,	0,	0	},
+	{	"saddr",			required_argument,	0,	0	},
+	{	"daddr",			required_argument,	0,	0	},
+	{	"flowlist",			required_argument,	0,	0	},
+	{	"flowsort",			no_argument,		0,	0	},
+	{	"flowdump",			no_argument,		0,	0	},
+	{	"rfc2544",			no_argument,		0,	0	},
+	{	"rfc2544-tolerable-error-rate",	required_argument,	0,	0	},
 	{	"rfc2544-trial-duration",	required_argument,	0,	0	},
-	{	NULL,		0,			NULL,	0	}
+	{	"rfc2544-pktsize",		required_argument,	0,	0	},
+	{	NULL,				0,			NULL,	0	}
 };
 
 int
@@ -2648,10 +2736,25 @@ main(int argc, char *argv[])
 				opt_flowlist = optarg;
 			} else if (strcmp(longopts[optidx].name, "rfc2544") == 0) {
 				opt_rfc2544 = 1;
+			} else if (strcmp(longopts[optidx].name, "rfc2544-tolerable-error-rate") == 0) {
+				opt_rfc2544_tolerable_error_rate = strtod(optarg, (char **)NULL);
+				if ((opt_rfc2544_tolerable_error_rate > 100.0) ||
+				    (opt_rfc2544_tolerable_error_rate < 0.0)) {
+					fprintf(stderr, "illegal error rate. must be 0.0-100.0: %s\n", optarg);
+					exit(1);
+				}
+
 			} else if (strcmp(longopts[optidx].name, "rfc2544-trial-duration") == 0) {
 				opt_rfc2544_trial_duration = strtol(optarg, (char **)NULL, 10);
 				if (opt_rfc2544_trial_duration < 3)
 					opt_rfc2544_trial_duration = 3;
+			} else if (strcmp(longopts[optidx].name, "rfc2544-pktsize") == 0) {
+				opt_rfc2544_pktsize = strtol(optarg, (char **)NULL, 10);
+				if ((opt_rfc2544_pktsize < 46) || (opt_rfc2544_pktsize > 1500)) {
+					fprintf(stderr, "illegal packet size: %s\n", optarg);
+					exit(1);
+				}
+				rfc2544_set_pktsize(opt_rfc2544_pktsize);
 			} else {
 				usage();
 			}
@@ -3126,7 +3229,7 @@ main(int argc, char *argv[])
 	/*
 	 * allocate per frame seqchecker
 	 */
-	j = get_flowid_max(0);
+	j = get_flownum(0);
 	interface[0].sequence_tx_perflow = malloc(sizeof(uint64_t) * j);
 	memset(interface[0].sequence_tx_perflow, 0, sizeof(uint64_t) * j);
 	interface[0].seqchecker_perflow = malloc(sizeof(struct sequencechecker *) * j);
@@ -3140,7 +3243,7 @@ main(int argc, char *argv[])
 		seqcheck_setparent(interface[0].seqchecker_perflow[i], interface[0].seqchecker_flowtotal);
 	}
 
-	j = get_flowid_max(1);
+	j = get_flownum(1);
 	interface[1].sequence_tx_perflow = malloc(sizeof(uint64_t) * j);
 	memset(interface[1].sequence_tx_perflow, 0, sizeof(uint64_t) * j);
 	interface[1].seqchecker_perflow = malloc(sizeof(struct sequencechecker *) * j);
@@ -3166,10 +3269,14 @@ main(int argc, char *argv[])
 		build_template_packet_ipv6(i, pktbuffer_ipv6_tcp[i]);
 	}
 
-	if (!opt_txonly)
-		pthread_create(&txrxthread0, NULL, txrx_thread_main, &ifnum[0]);
-	if (!opt_rxonly)
-		pthread_create(&txrxthread1, NULL, txrx_thread_main, &ifnum[1]);
+	if (!opt_txonly) {
+		pthread_create(&txthread0, NULL, tx_thread_main, &ifnum[0]);
+		pthread_create(&rxthread0, NULL, rx_thread_main, &ifnum[0]);
+	}
+	if (!opt_rxonly) {
+		pthread_create(&txthread1, NULL, tx_thread_main, &ifnum[1]);
+		pthread_create(&rxthread1, NULL, rx_thread_main, &ifnum[1]);
+	}
 
 	/* update transmit flags */
 	if (!opt_txonly && opt_fulldup)

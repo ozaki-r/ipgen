@@ -107,7 +107,12 @@ seqcheck_init(struct sequencechecker *sc)
 void
 seqcheck_clear(struct sequencechecker *sc)
 {
+	struct sequencechecker *parent;
+	parent = sc->sc_parent;	/* save */
+
 	seqcheck_init(sc);
+
+	sc->sc_parent = parent;	/* restore */
 }
 
 static void
