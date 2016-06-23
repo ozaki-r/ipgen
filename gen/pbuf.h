@@ -26,6 +26,7 @@
 #ifndef _PBUF_H_
 #define _PBUF_H_
 
+#include <pthread.h>
 #include <sys/queue.h>
 
 struct pbuf {
@@ -36,6 +37,7 @@ struct pbuf {
 
 TAILQ_HEAD(pbufq_head, pbuf);
 struct pbufq {
+	pthread_mutex_t mtx;
 	struct pbufq_head q;
 	unsigned int n;
 };

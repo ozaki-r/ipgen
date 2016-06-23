@@ -23,6 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "pbuf.h"
@@ -81,6 +82,7 @@ pbuf_free(struct pbuf *p)
 int
 pbufq_init(struct pbufq *pbufq)
 {
+	pthread_mutex_init(&pbufq->mtx, NULL);
 	TAILQ_INIT(&pbufq->q);
 	pbufq->n = 0;
 	return 0;
@@ -89,8 +91,10 @@ pbufq_init(struct pbufq *pbufq)
 int
 pbufq_enqueue(struct pbufq *pbufq, struct pbuf *p)
 {
+	pthread_mutex_lock(&pbufq->mtx);
 	TAILQ_INSERT_TAIL(&pbufq->q, p, list);
 	pbufq->n++;
+	pthread_mutex_unlock(&pbufq->mtx);
 	return 0;
 }
 
@@ -105,11 +109,13 @@ pbufq_dequeue(struct pbufq *pbufq)
 {
 	struct pbuf *p;
 
+	pthread_mutex_lock(&pbufq->mtx);
 	p = TAILQ_FIRST(&pbufq->q);
 	if (p != NULL) {
 		TAILQ_REMOVE(&pbufq->q, p, list);
 		pbufq->n--;
 	}
+	pthread_mutex_unlock(&pbufq->mtx);
 	return p;
 }
 

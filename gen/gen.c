@@ -77,7 +77,7 @@
 static void rfc2544_showresult(void);
 static void quit(int fromsig);
 
-double ipgen_version = 1.24;
+double ipgen_version = 1.25;
 
 #define DISPLAY_UPDATE_HZ	20
 #define DEFAULT_PPS_HZ		1000
@@ -106,7 +106,7 @@ int opt_rfc2544 = 0;
 double opt_rfc2544_tolerable_error_rate = 0.0;	/* default 0.00 % */
 int opt_rfc2544_trial_duration = 60;	/* default 60sec */
 int opt_rfc2544_pktsize = 0;		/* default: all range */
-
+int opt_rfc2544_slowstart = 0;
 
 #ifdef IPG_HACK
 int support_ipg = 0;
@@ -1346,19 +1346,22 @@ interface_statistics_json(int ifno, char *buf, int buflen)
 	);
 }
 
-#define JSON_BUFSIZE	(1024 * 32)
-char jsonbuf[JSON_BUFSIZE];
-int jsonbuf_len;
+#define JSON_BUFSIZE	(1024 * 16)
+char jsonbuf_x[4][JSON_BUFSIZE];
 
-static void
-build_json_statistics(void)
+static char *
+build_json_statistics(unsigned int *lenp)
 {
 	int len;
+	static uint32_t n = 0;
+	char *jsonbuf;
+
+	jsonbuf = jsonbuf_x[++n & 3];
 
 	/* generate json statistics string */
 	len = 0;
 	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, "{\"apiversion\":\"1.2\"");
-	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, ",\"time\":%.2f",
+	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, ",\"time\":%.8f",
 	    currenttime.tv_sec + currenttime.tv_nsec / 1000000000.0);
 
 	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, ",\"statistics\":[");
@@ -1370,25 +1373,32 @@ build_json_statistics(void)
 			len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, "]}\n");
 		}
 	}
-	jsonbuf_len = len;
+	*lenp = len;
+
+	return jsonbuf;
 }
 
 /* be careful. broadcast_json_statistics() called from signal handler */
 static void
-broadcast_json_statistics(void)
+broadcast_json_statistics(char *buf, unsigned int len)
 {
 	if (logfd >= 0)
-		write(logfd, jsonbuf, jsonbuf_len);
+		write(logfd, buf, len);
 
-	webserv_stream_broadcast(jsonbuf, jsonbuf_len);
+	webserv_stream_broadcast(buf, len);
 }
 
 static void
 sighandler_alrm(int signo)
 {
-	static unsigned int nhz = 0;
+	static uint32_t _nhz = 0;
+	uint32_t nhz;
 	int i;
 	uint64_t x;
+
+	nhz = _nhz++;
+	if (_nhz >= pps_hz)
+		_nhz = 0;
 
 	if ((nhz + 1) >= pps_hz) {
 		/* this block called 1Hz */
@@ -1447,8 +1457,10 @@ sighandler_alrm(int signo)
 
 		/* need to update statistics string buffer in json? */
 		if ((logfd >= 0) || (webserv_need_broadcast() != 0)) {
-			build_json_statistics();
-			broadcast_json_statistics();
+			char *buf;
+			unsigned int len;
+			buf = build_json_statistics(&len);
+			broadcast_json_statistics(buf, len);
 		}
 	}
 
@@ -1461,9 +1473,6 @@ sighandler_alrm(int signo)
 			atomic_add_64(&interface[i].counter.tx_underrun, x);
 		}
 	}
-
-	if (++nhz >= pps_hz)
-		nhz = 0;
 
 	return;
 }
@@ -1565,6 +1574,7 @@ usage(void)
 	fprintf(stderr, "	-F <nflow>			limit <nflow>\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "	--rfc2544			rfc2544 test mode\n");
+	fprintf(stderr, "	--rfc2544-slowstart		increase pps step-by-step (default: binary-search)\n");
 	fprintf(stderr, "	--rfc2544-tolerable-error-rate <percent>\n");
 	fprintf(stderr, "					rfc2544 tolerable error rate (default: 0)\n");
 	fprintf(stderr, "	--rfc2544-trial-duration <sec>	rfc2544 trial duration time (default: 60)\n");
@@ -1750,6 +1760,7 @@ struct rfc2544_work {
 	unsigned int limitpps;
 	unsigned int curpps;
 	unsigned int prevpps;
+	unsigned int maxup;
 };
 
 struct rfc2544_work rfc2544_work[] = {
@@ -1856,22 +1867,43 @@ rfc2544_showresult(void)
 }
 
 
-static void
+static int
 rfc2544_down_pps(void)
 {
+	if (rfc2544_work[rfc2544_nthtest].curpps - 1 == rfc2544_work[rfc2544_nthtest].minpps) {
+		rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].minpps;
+		return 1;
+	}
+
 	rfc2544_work[rfc2544_nthtest].prevpps = rfc2544_work[rfc2544_nthtest].curpps;
 	rfc2544_work[rfc2544_nthtest].maxpps = rfc2544_work[rfc2544_nthtest].curpps;
 	rfc2544_work[rfc2544_nthtest].curpps =
 	    (rfc2544_work[rfc2544_nthtest].minpps + rfc2544_work[rfc2544_nthtest].maxpps) / 2;
+
+	return 0;
 }
 
-static void
+static int
 rfc2544_up_pps(void)
 {
+	unsigned int nextpps;
+
+
+	if (rfc2544_work[rfc2544_nthtest].curpps >= rfc2544_work[rfc2544_nthtest].maxpps)
+		return 1;
+
 	rfc2544_work[rfc2544_nthtest].prevpps = rfc2544_work[rfc2544_nthtest].curpps;
 	rfc2544_work[rfc2544_nthtest].minpps = rfc2544_work[rfc2544_nthtest].curpps;
-	rfc2544_work[rfc2544_nthtest].curpps =
-	    (rfc2544_work[rfc2544_nthtest].minpps + rfc2544_work[rfc2544_nthtest].maxpps) / 2;
+
+	nextpps = (rfc2544_work[rfc2544_nthtest].minpps + rfc2544_work[rfc2544_nthtest].maxpps + 1) / 2;
+	if ((nextpps - rfc2544_work[rfc2544_nthtest].curpps) > rfc2544_work[rfc2544_nthtest].maxup)
+		nextpps = rfc2544_work[rfc2544_nthtest].curpps + rfc2544_work[rfc2544_nthtest].maxup;
+	rfc2544_work[rfc2544_nthtest].curpps = nextpps;
+
+	if (rfc2544_work[rfc2544_nthtest].curpps < rfc2544_work[rfc2544_nthtest].minpps)
+		return 1;
+
+	return 0;
 }
 
 void
@@ -1912,11 +1944,15 @@ rfc2544_test(int unsigned n)
 		statistics_clear();
 
 		rfc2544_work[rfc2544_nthtest].limitpps = rfc2544_work[rfc2544_nthtest].maxpps;
+		if (opt_rfc2544_slowstart)
+			rfc2544_work[rfc2544_nthtest].maxup = rfc2544_work[rfc2544_nthtest].maxpps / 10;
+		else
+			rfc2544_work[rfc2544_nthtest].maxup = rfc2544_work[rfc2544_nthtest].maxpps / 2;
+
 		rfc2544_work[rfc2544_nthtest].prevpps = 0;
 
 		if (rfc2544_nthtest == 0) {
-			rfc2544_work[rfc2544_nthtest].curpps = 
-			    (rfc2544_work[rfc2544_nthtest].minpps + rfc2544_work[rfc2544_nthtest].maxpps) / 2;
+			rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].maxup;
 		} else if (rfc2544_work[rfc2544_nthtest].maxpps < rfc2544_work[rfc2544_nthtest - 1].curpps) {
 			rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].maxpps;
 		} else {
@@ -1952,11 +1988,11 @@ rfc2544_test(int unsigned n)
 
 	case RFC2544_MEASURING0:
 		if (rfc2544_work[rfc2544_nthtest].prevpps) {
-			sprintf(msgbuf, "measuring pktsize %u, pps %u (%.2fMbps) -> %u (%.2fMbps)",
+			sprintf(msgbuf, "measuring pktsize %u, pps %u -> %u (%.4fMbps -> %.4fMbps)",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].prevpps,
-			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].prevpps),
 			    rfc2544_work[rfc2544_nthtest].curpps,
+			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].prevpps),
 			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
 		} else {
 			sprintf(msgbuf, "measuring pktsize %d, pps %d (%.2fMbps)",
@@ -1977,35 +2013,30 @@ rfc2544_test(int unsigned n)
 		if ((interface[0].counter.rx != 0) &&
 		    (((interface[0].counter.rx_seqdrop * 100.0) / interface[0].counter.rx) > opt_rfc2544_tolerable_error_rate)) {
 
-			/* dropped... */
-			if (rfc2544_work[rfc2544_nthtest].minpps >= rfc2544_work[rfc2544_nthtest].curpps - 1) {
-				rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].minpps;
-				measure_done = 1;
-			} else {
-				do_down_pps = 1;
-			}
+			do_down_pps = 1;
+
 		} else if (timespeccmp(&currenttime, &statetime, >)) {
-			/* no drop. OK! */
-			if (rfc2544_work[rfc2544_nthtest].maxpps <= rfc2544_work[rfc2544_nthtest].curpps + 1) {
-				measure_done = 1;
+			if (interface[0].counter.rx == 0) {
+				do_down_pps = 1;
 			} else {
-				rfc2544_up_pps();
-				setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
-				state = RFC2544_MEASURING0;
+				/* no drop. OK! */
+				measure_done = rfc2544_up_pps();
+				if (!measure_done) {
+					setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
+					state = RFC2544_MEASURING0;
+				}
 			}
 		}
 
-		if (measure_done && (interface[0].counter.rx_seqdrop == 0))
-			do_down_pps = 1;
-
 		if (do_down_pps) {
-			rfc2544_down_pps();
-			setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
-			statistics_clear();
-			memcpy(&statetime, &currenttime, sizeof(struct timeval));
-			statetime.tv_sec += 1;	/* wait 2sec */
-			state = RFC2544_PPSCHANGE;
-			measure_done = 0;
+			measure_done = rfc2544_down_pps();
+			if (!measure_done) {
+				setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
+				statistics_clear();
+				memcpy(&statetime, &currenttime, sizeof(struct timeval));
+				statetime.tv_sec += 1;	/* wait 2sec */
+				state = RFC2544_PPSCHANGE;
+			}
 		}
 
 		if (measure_done) {
@@ -2492,6 +2523,7 @@ static struct option longopts[] = {
 	{	"flowdump",			no_argument,		0,	0	},
 	{	"rfc2544",			no_argument,		0,	0	},
 	{	"rfc2544-tolerable-error-rate",	required_argument,	0,	0	},
+	{	"rfc2544-slowstart",		no_argument,		0,	0	},
 	{	"rfc2544-trial-duration",	required_argument,	0,	0	},
 	{	"rfc2544-pktsize",		required_argument,	0,	0	},
 	{	NULL,				0,			NULL,	0	}
@@ -2743,7 +2775,8 @@ main(int argc, char *argv[])
 					fprintf(stderr, "illegal error rate. must be 0.0-100.0: %s\n", optarg);
 					exit(1);
 				}
-
+			} else if (strcmp(longopts[optidx].name, "rfc2544-slowstart") == 0) {
+				opt_rfc2544_slowstart = 1;
 			} else if (strcmp(longopts[optidx].name, "rfc2544-trial-duration") == 0) {
 				opt_rfc2544_trial_duration = strtol(optarg, (char **)NULL, 10);
 				if (opt_rfc2544_trial_duration < 3)

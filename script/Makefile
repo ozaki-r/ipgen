@@ -1,6 +1,7 @@
 .include <../Makefile.inc>
 
 FILES=	pktsize46.script	\
+	pktsize66.script	\
 	pktsize100.script	\
 	pktsize200.script	\
 	pktsize300.script	\
