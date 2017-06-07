@@ -155,6 +155,32 @@ parse_addr_port(char *str, struct in_addr *addrstart, struct in_addr *addrend, u
 	return 0;
 }
 
+int
+parse_addr6_port(char *str, struct in6_addr *addr6start, struct in6_addr *addr6end, uint16_t *portstart, uint16_t *portend)
+{
+	char *p0, *p;
+
+	if (str[0] != '[')
+		return -1;
+	str++;
+
+	p0 = str;
+	p = index(str, ']');
+	if (p == NULL)
+		return -1;
+	*p++ = '\0';
+	if (*p != ':')
+		return -1;
+	*p++ = '\0';
+
+	if (parse_addr6range(p0, addr6start, addr6end) != 0)
+		return -1;
+	if (parse_portrange(p, portstart, portend) != 0)
+		return -1;
+
+	return 0;
+}
+
 /*
  * parse flow strings:
  *  <address>[-<address>]:<port>[-<port>],<address>[-<address>]:<port>[-<port>]
@@ -171,6 +197,8 @@ parse_flowstr(struct addresslist *adrlist, int proto, const char *flowstr, int r
 	char *str;
 	struct in_addr sadr_start, sadr_end;
 	struct in_addr dadr_start, dadr_end;
+	struct in6_addr sadr6_start, sadr6_end;
+	struct in6_addr dadr6_start, dadr6_end;
 	uint16_t sport_start, sport_end;
 	uint16_t dport_start, dport_end;
 	int rc;
@@ -194,24 +222,45 @@ parse_flowstr(struct addresslist *adrlist, int proto, const char *flowstr, int r
 		dstp++;
 	srcp = str;
 
-	if (parse_addr_port(srcp, &sadr_start, &sadr_end, &sport_start, &sport_end) != 0) {
-		rc = -1;
-		goto done;
-	}
 
-	if (parse_addr_port(dstp, &dadr_start, &dadr_end, &dport_start, &dport_end) != 0) {
-		rc = -1;
-		goto done;
-	}
+	if (srcp[0] == '[') {
+		if (parse_addr6_port(srcp, &sadr6_start, &sadr6_end, &sport_start, &sport_end) != 0) {
+			rc = -1;
+			goto done;
+		}
+		if (parse_addr6_port(dstp, &dadr6_start, &dadr6_end, &dport_start, &dport_end) != 0) {
+			rc = -1;
+			goto done;
+		}
 
-	if (reverse) {
-		addresslist_append(adrlist, proto,
-		    dadr_start, dadr_end, sadr_start, sadr_end,
-		    dport_start, dport_end, sport_start, sport_end);
+		if (reverse) {
+			addresslist_append6(adrlist, proto,
+			    &dadr6_start, &dadr6_end, &sadr6_start, &sadr6_end,
+			    dport_start, dport_end, sport_start, sport_end);
+		} else {
+			addresslist_append6(adrlist, proto,
+			    &sadr6_start, &sadr6_end, &dadr6_start, &dadr6_end,
+			    sport_start, sport_end, dport_start, dport_end);
+		}
 	} else {
-		addresslist_append(adrlist, proto,
-		    sadr_start, sadr_end, dadr_start, dadr_end,
-		    sport_start, sport_end, dport_start, dport_end);
+		if (parse_addr_port(srcp, &sadr_start, &sadr_end, &sport_start, &sport_end) != 0) {
+			rc = -1;
+			goto done;
+		}
+		if (parse_addr_port(dstp, &dadr_start, &dadr_end, &dport_start, &dport_end) != 0) {
+			rc = -1;
+			goto done;
+		}
+
+		if (reverse) {
+			addresslist_append(adrlist, proto,
+			    dadr_start, dadr_end, sadr_start, sadr_end,
+			    dport_start, dport_end, sport_start, sport_end);
+		} else {
+			addresslist_append(adrlist, proto,
+			    sadr_start, sadr_end, dadr_start, dadr_end,
+			    sport_start, sport_end, dport_start, dport_end);
+		}
 	}
 
 	rc = 0;

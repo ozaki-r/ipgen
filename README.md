@@ -8,8 +8,11 @@ ipgen is an Interactive Packet Generator with netmap
 usage
 =====
 - setup FreeBSD and config kernel with NETMAP (add "device netmap" to conf/GENERIC).
-- (make depend && make && make install) in ipgen/
-- run
+- perl and libevent are required to compile.
+-- git clone git@github.com:iij/ipgen.git
+-- cd ipgen
+-- make depend && make && make install
+-- run ipgen
 
 
 Presentation materials

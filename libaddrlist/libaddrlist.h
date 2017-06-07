@@ -26,6 +26,8 @@
 #ifndef _LIBADDR_H_
 #define _LIBADDR_H_
 
+#include <net/ethernet.h>
+
 struct address {
 	uint8_t af;
 	union {
@@ -49,10 +51,12 @@ struct addresslist {
 };
 
 struct address_tuple {
+	struct ether_addr seaddr, deaddr;
 	struct address saddr, daddr;
 	uint16_t sport, dport;
 	uint16_t proto;
-} __packed;
+	void *udata;
+};
 
 struct addresslist *addresslist_new(void);
 void addresslist_delete(struct addresslist *);

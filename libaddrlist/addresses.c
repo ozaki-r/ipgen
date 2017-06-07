@@ -33,6 +33,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <md5.h>
 
 #include "libaddrlist.h"
 
@@ -207,6 +208,20 @@ ip4_sprintf(struct in_addr *addr)
 	return p;
 }
 
+static void
+l2random(const void *data, unsigned int len, struct ether_addr *eaddr)
+{
+	MD5_CTX ctx;
+	unsigned char digest[MD5_DIGEST_LENGTH];
+
+	MD5Init(&ctx);
+	MD5Update(&ctx, data, len);
+	MD5Final(digest, &ctx);
+
+	memcpy(eaddr->octet, digest, sizeof(eaddr->octet));
+	eaddr->octet[0] &= 0xfc;
+}
+
 int
 addresslist_append(struct addresslist *adrlist, uint8_t proto,
     struct in_addr saddr_begin, struct in_addr saddr_end,
@@ -241,10 +256,13 @@ addresslist_append(struct addresslist *adrlist, uint8_t proto,
 	}
 
 
-	if (adrlist->tuple == NULL)
+	if (adrlist->tuple == NULL) {
 		newtuple = malloc(sizeof(struct address_tuple) * tuple_num);
-	else
+		memset(newtuple, 0, sizeof(struct address_tuple) * tuple_num);
+	} else {
 		newtuple = realloc(adrlist->tuple, sizeof(struct address_tuple) * (adrlist->ntuple + tuple_num));
+		memset(newtuple + adrlist->ntuple, 0, sizeof(struct address_tuple) * tuple_num);
+	}
 
 	if (newtuple == NULL) {
 		fprintf(stderr, "Cannot allocate memory. number of session is %u\n", adrlist->ntuple + tuple_num);
@@ -263,9 +281,6 @@ addresslist_append(struct addresslist *adrlist, uint8_t proto,
 		    exists_in_addresses(AF_INET, &daddr, adrlist->exclude_daddr, adrlist->exclude_daddr_num)) {
 			tuple_num--;
 		} else {
-			memset(&newtuple[adrlist->ntuple + n].saddr, 0, sizeof(newtuple[adrlist->ntuple + n].saddr));
-			memset(&newtuple[adrlist->ntuple + n].daddr, 0, sizeof(newtuple[adrlist->ntuple + n].daddr));
-
 			newtuple[adrlist->ntuple + n].saddr.af = AF_INET;
 			newtuple[adrlist->ntuple + n].saddr.a.addr4.s_addr = saddr.s_addr;
 			newtuple[adrlist->ntuple + n].daddr.af = AF_INET;
@@ -273,6 +288,14 @@ addresslist_append(struct addresslist *adrlist, uint8_t proto,
 			newtuple[adrlist->ntuple + n].sport = sport;
 			newtuple[adrlist->ntuple + n].dport = dport;
 			newtuple[adrlist->ntuple + n].proto = proto;
+
+			l2random(&newtuple[adrlist->ntuple + n].saddr.a.addr4,
+			    sizeof(newtuple[adrlist->ntuple + n].saddr.a.addr4),
+			    &newtuple[adrlist->ntuple + n].seaddr);
+			l2random(&newtuple[adrlist->ntuple + n].daddr.a.addr4,
+			    sizeof(newtuple[adrlist->ntuple + n].daddr.a.addr4),
+			    &newtuple[adrlist->ntuple + n].deaddr);
+
 			n++;
 		}
 
@@ -386,10 +409,13 @@ addresslist_append6(struct addresslist *adrlist, uint8_t proto,
 		return -1;
 	}
 
-	if (adrlist->tuple == NULL)
+	if (adrlist->tuple == NULL) {
 		newtuple = malloc(sizeof(struct address_tuple) * tuple_num);
-	else
+		memset(newtuple, 0, sizeof(struct address_tuple) * tuple_num);
+	} else {
 		newtuple = realloc(adrlist->tuple, sizeof(struct address_tuple) * (adrlist->ntuple + tuple_num));
+		memset(newtuple + adrlist->ntuple, 0, sizeof(struct address_tuple) * tuple_num);
+	}
 
 	if (newtuple == NULL) {
 		fprintf(stderr, "Cannot allocate memory. number of session is %lu\n", adrlist->ntuple + tuple_num);
@@ -408,9 +434,6 @@ addresslist_append6(struct addresslist *adrlist, uint8_t proto,
 		    exists_in_addresses(AF_INET, &daddr, adrlist->exclude_daddr, adrlist->exclude_daddr_num)) {
 			tuple_num--;
 		} else {
-			memset(&newtuple[adrlist->ntuple + n].saddr, 0, sizeof(newtuple[adrlist->ntuple + n].saddr));
-			memset(&newtuple[adrlist->ntuple + n].daddr, 0, sizeof(newtuple[adrlist->ntuple + n].daddr));
-
 			newtuple[adrlist->ntuple + n].saddr.af = AF_INET6;
 			newtuple[adrlist->ntuple + n].saddr.a.addr6 = saddr;
 			newtuple[adrlist->ntuple + n].daddr.af = AF_INET6;
@@ -418,6 +441,14 @@ addresslist_append6(struct addresslist *adrlist, uint8_t proto,
 			newtuple[adrlist->ntuple + n].sport = sport;
 			newtuple[adrlist->ntuple + n].dport = dport;
 			newtuple[adrlist->ntuple + n].proto = proto;
+
+			l2random(&newtuple[adrlist->ntuple + n].saddr.a.addr6,
+			    sizeof(newtuple[adrlist->ntuple + n].saddr.a.addr6),
+			    &newtuple[adrlist->ntuple + n].seaddr);
+			l2random(&newtuple[adrlist->ntuple + n].daddr.a.addr6,
+			    sizeof(newtuple[adrlist->ntuple + n].daddr.a.addr6),
+			    &newtuple[adrlist->ntuple + n].deaddr);
+
 			n++;
 		}
 
@@ -551,6 +582,7 @@ addresslist_dump(struct addresslist *adrlist)
 	struct address_tuple *tuple;
 	unsigned int n;
 	char buf1[128], buf2[128];
+	char ebuf1[sizeof("00:00:00:00:00:00")], ebuf2[sizeof("00:00:00:00:00:00")];
 	char *bracket_l, *bracket_r;
 
 	printf("<addresslist p=%p sorted=%d ntuple=%u curtuple=%u>\n",
@@ -588,12 +620,17 @@ addresslist_dump(struct addresslist *adrlist)
 				break;
 			}
 
-			printf("    %d: %d %s%s%s:%d - %s%s%s:%d",
+			ether_ntoa_r(&tuple[n].seaddr, ebuf1);
+			ether_ntoa_r(&tuple[n].deaddr, ebuf2);
+
+
+			printf("    %d: %d %s%s%s:%d - %s%s%s:%d    (%s - %s)",
 			    n, tuple[n].proto,
 			    bracket_l, buf1, bracket_r,
 			    tuple[n].sport,
 			    bracket_l, buf2, bracket_r,
-			    tuple[n].dport);
+			    tuple[n].dport,
+			    ebuf1, ebuf2);
 
 			if (adrlist->sorted) {
 				printf("   => id=%d",

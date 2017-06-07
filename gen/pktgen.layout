@@ -1,4 +1,4 @@
-              ipgen - interactive packet generator ver#### - netmap API:##	id=ipgen_version,DBL	id=netmap_api,U32
+          ipgen - interactive packet generator ver######## - netmap API:##	id=ipgen_version,LEFT,STR	id=netmap_api,U32
                                                                           
       #################### ######### ######### ####################       	id=ifname0,RIGHT,STR	id=twiddle0,STR,LEFT	id=twiddle1,STR	id=ifname1,LEFT,STR
                                                                           
@@ -13,11 +13,9 @@
     RX-reorder/flow: ########### pkt    RX-reorder/flow: ######### pkt    	id=if0_rx_reorder_flow,U64	id=if1_rx_reorder_flow,U64
     RX-flowctrl: ############### pkt    RX-flowctrl: ############# pkt    	id=if0_rx_flow,U64		id=if1_rx_flow,U64
     RX-arp/ndp: ################ pkt    RX-arp/ndp: ############## pkt    	id=if0_rx_arp,U64		id=if1_rx_arp,U64
-    RX-icmpecho: ############### pkt    RX-icmpecho: ############# pkt    	id=if0_rx_icmpecho,U64		id=if1_rx_icmpecho,U64
-       icmpunreach: ############ pkt       icmpunreach: ########## pkt    	id=if0_rx_icmpunreach,U64	id=if1_rx_icmpunreach,U64
-       icmpredirect: ########### pkt       icmpredirect: ######### pkt    	id=if0_rx_icmpredirect,U64	id=if1_rx_icmpredirect,U64
-       icmpother: ############## pkt       icmpother: ############ pkt    	id=if0_rx_icmpother,U64		id=if1_rx_icmpother,U64
+    RX-icmp: ################### pkt    RX-icmp: ################# pkt    	id=if0_rx_icmp,U64		id=if1_rx_icmp,U64
     RX-other: ################## pkt    RX-other: ################ pkt    	id=if0_rx_other,U64		id=if1_rx_other,U64
+    RX-expired: ################ pkt    RX-expired: ############## pkt    	id=if0_rx_expire,U64		id=if1_rx_expire,U64
                                                                           
   Delta:                                                                  
                  TX: ########### pps               TX: ########### pps    	id=if0_tx_delta,U64		id=if1_tx_delta,U64
@@ -44,4 +42,4 @@
     'z' - clear statistics,  'q' - quit                                   
     <TAB>,<ARROW>,^N,^P,^F,^B - select,  <ENTER> - edit,  <ESC> - cancel  
 
-##########################################################################	id=msgbuf,STR,LEFT
+############################################################################################	id=msgbuf,STR,LEFT

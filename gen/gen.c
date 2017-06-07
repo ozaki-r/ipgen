@@ -24,7 +24,11 @@
  * SUCH DAMAGE.
  */
 #include <pthread.h>
+#ifdef __FreeBSD__
+#include <pthread_np.h>
+#endif
 #include <stdio.h>
+#include <ctype.h>
 #include <getopt.h>
 #include <poll.h>
 #include <err.h>
@@ -54,6 +58,7 @@
 #include "gen.h"
 #include "pbuf.h"
 #include "sequencecheck.h"
+#include "seqtable.h"
 #include "item.h"
 #include "genscript.h"
 #include "flowparse.h"
@@ -61,23 +66,27 @@
 #include "pktgen_item.h"
 
 #define	LINKSPEED_1GBPS		1000000000ULL
+#define	LINKSPEED_10GBPS	10000000000ULL
 
 #define	DEFAULT_IFG		12	/* Inter Packet Gap */
 #define	DEFAULT_PREAMBLE	(7 + 1)	/* preamble + SDF */
 #define	FCS			4
 #define	ETHHDRSIZE		sizeof(struct ether_header)
 #define	PKTSIZE2FRAMESIZE(x)	((x) + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS)
+#define	CALC_BPS(pktsize, pps)	\
+	((PKTSIZE2FRAMESIZE((pktsize) + ETHHDRSIZE) * (pps)) * 8.0)
 #define	CALC_MBPS(pktsize, pps)	\
-	((PKTSIZE2FRAMESIZE((pktsize) + ETHHDRSIZE) * (pps)) * 8.0 / 1000 / 1000)
+	(CALC_BPS(pktsize, pps) / 1000 / 1000)
 
 #define	PORT_DEFAULT		9	/* discard port */
 #define MAXFLOWNUM		(1024 * 1024)
 
 
 static void rfc2544_showresult(void);
-static void quit(int fromsig);
+static void rfc2544_showresult_json(char *);
+static void quit(int);
 
-double ipgen_version = 1.25;
+char ipgen_version[] = "1.26";
 
 #define DISPLAY_UPDATE_HZ	20
 #define DEFAULT_PPS_HZ		1000
@@ -107,6 +116,7 @@ double opt_rfc2544_tolerable_error_rate = 0.0;	/* default 0.00 % */
 int opt_rfc2544_trial_duration = 60;	/* default 60sec */
 int opt_rfc2544_pktsize = 0;		/* default: all range */
 int opt_rfc2544_slowstart = 0;
+char *opt_rfc2544_output_json = NULL;
 
 #ifdef IPG_HACK
 int support_ipg = 0;
@@ -133,7 +143,7 @@ int opt_flowsort = 0;
 int opt_flowdump = 0;
 char *opt_flowlist = NULL;
 
-int min_pktsize = 46;	/* not include ether-header. udp4:46, tcp4:58, udp6:66, tcp6:78 */
+int min_pktsize = 46;	/* not include ether-header. udp4:46, tcp4:46, udp6:54, tcp6:66 */
 
 int force_redraw_screen = 0;
 int do_quit = 0;
@@ -152,21 +162,22 @@ pthread_t controlthread;
 
 const uint8_t eth_zero[6] = { 0, 0, 0, 0, 0, 0 };
 
-/* sizeof(struct seqdata) = 18 bytes */
+/* sizeof(struct seqdata) = 6 bytes */
 struct seqdata {
-	uint16_t magic;
 	uint32_t seq;
-	uint32_t seq_flowid;
-	uint32_t seq_perflow;
-	uint32_t time32;
+	uint16_t magic;
 } __packed;
 static uint16_t seq_magic;
 
 struct interface {
 	int opened;
 	struct nm_desc *nm_desc;
-	char ifname[32];
+	char ifname[IFNAMSIZ];
+	char drvname[IFNAMSIZ];
+	unsigned long unit;	/* Unit number of the interface */
+	char netmapname[128];
 	char decorated_ifname[64];
+	uint64_t maxlinkspeed;
 	char twiddle[32];
 	int promisc_save;
 
@@ -188,11 +199,13 @@ struct interface {
 		uint64_t rx_arp;
 		uint64_t rx_udp;
 		uint64_t rx_tcp;
+		uint64_t rx_icmp;
 		uint64_t rx_icmpother;
 		uint64_t rx_icmpecho;
 		uint64_t rx_icmpunreach;
 		uint64_t rx_icmpredirect;
 		uint64_t rx_other;
+		uint64_t rx_expire;
 		uint64_t tx_underrun;
 		uint64_t rx_seqrewind;
 
@@ -230,6 +243,8 @@ struct interface {
 	struct sequencechecker *seqchecker;	/* receive sequence drop checker */
 	struct sequencechecker *seqchecker_flowtotal;
 	struct sequencechecker **seqchecker_perflow;
+	struct sequence_table *seqtable;	/* sequence info recorder */
+	char *perflow_packet_template;
 
 	uint64_t sequence_tx;			/* transmit sequence number */
 	uint64_t *sequence_tx_perflow;		/* transmit sequence number per flow*/
@@ -254,6 +269,7 @@ struct interface {
 	int af_gwaddr;			/* AF_INET or AF_INET6 */
 	struct in_addr gwaddr;		/* gw IP address */
 	struct in6_addr gw6addr;	/* gw IPv6 address */
+	int gw_l2random;		/* gw address is random (for L2 bridge test) */
 
 } interface[2];
 
@@ -262,9 +278,18 @@ static char pktbuffer_ipv4_tcp[2][LIBPKT_PKTBUFSIZE] __attribute__((__aligned__(
 static char pktbuffer_ipv6_udp[2][LIBPKT_PKTBUFSIZE] __attribute__((__aligned__(8)));
 static char pktbuffer_ipv6_tcp[2][LIBPKT_PKTBUFSIZE] __attribute__((__aligned__(8)));
 
+struct ifflag {
+	const char drvname[IFNAMSIZ];
+	uint64_t maxlinkspeed;
+} ifflags[] = {
+	{"em",  LINKSPEED_1GBPS},
+	{"igb", LINKSPEED_1GBPS},
+	{"bge", LINKSPEED_1GBPS},
+	{"ix",  LINKSPEED_10GBPS},
+};
 
-struct timespec currenttime;
-static uint32_t currenttime32;
+struct timespec currenttime_tx;
+struct timespec currenttime_main;
 sigset_t used_sigset;
 
 unsigned int
@@ -307,19 +332,6 @@ build_template_packet_ipv6(int ifno, char *pkt)
 	return interface[ifno].pktsize;
 }
 
-inline static uint32_t
-timespec_pack32(struct timespec *ts)
-{
-	return ((ts->tv_sec & 0xff) << 24) + (ts->tv_nsec >> 6);
-}
-
-inline static void
-timespec_unpack32(uint32_t pt, struct timespec *ts)
-{
-	ts->tv_sec = (pt >> 24) & 0xff;
-	ts->tv_nsec = (pt & 0x00ffffff) << 6;
-}
-
 inline static int
 in_range(int num, int begin, int end)
 {
@@ -350,6 +362,10 @@ touchup_tx_packet(char *buf, int ifno)
 	uint32_t flowid;
 	const struct address_tuple *tuple;
 	int ipv6;
+	int ifno_another;
+	struct sequence_record *seqrecord;
+
+	ifno_another = ifno ^ 1;
 
 	if (opt_gentest) {
 		/* for benchmark (with -X option) */
@@ -403,15 +419,19 @@ touchup_tx_packet(char *buf, int ifno)
 			ipv6 = 1;
 		}
 
+		if (interface[ifno].gw_l2random)
+			ethpkt_dst(buf, (u_char *)tuple->deaddr.octet);
+		if (interface[ifno_another].gw_l2random)
+			ethpkt_src(buf, (u_char *)tuple->seaddr.octet);
 
-		/* fill in sequence number to payload */
+		/* store sequence number, and remember relational info */
+		seqrecord = seqtable_prep(interface[ifno_another].seqtable);
 		seqdata.magic = seq_magic;
-		seqdata.seq = interface[ifno].sequence_tx++;
-		if (!opt_gentest) {
-			seqdata.seq_flowid = flowid;
-			seqdata.seq_perflow = interface[ifno].sequence_tx_perflow[flowid]++;
-		}
-		seqdata.time32 = currenttime32;
+		seqdata.seq = seqrecord->seq;
+		seqrecord->flowid = flowid;
+		seqrecord->flowseq = interface[ifno].sequence_tx_perflow[flowid]++;
+		seqrecord->ts = currenttime_tx;
+
 
 		if (ipv6) 
 			ip6pkt_writedata(buf, 0, (char *)&seqdata, sizeof(seqdata));
@@ -441,36 +461,93 @@ statistics_clear(void)
 	return 0;
 }
 
+int
+getifunit(const char *ifname, char *drvname, unsigned long *unit)
+{
+	int i;
+
+	for (i = strlen(ifname) - 1; i >= 0; i--)
+		if (!isdigit(*(ifname + i)))
+			break;
+	if ((i < 0) || (i == strlen(ifname) - 1))
+		return -1;
+
+	i++;
+	if (drvname != NULL) {
+		strncpy(drvname, ifname, i);
+		drvname[i] = 0;
+	}
+	*unit = strtoul(ifname + i, NULL, 10);
+
+	return 0;
+}
+
 #ifdef IPG_HACK
 /* set Transmit Inter Packet Gap */
-static void
-set_ipg(const char *ifname, unsigned int ipg)
+static int
+set_ipg(int ifno, unsigned int ipg)
 {
 	char buf[256];
-	unsigned int unit;
+	const char *drvname = interface[ifno].drvname;
+	unsigned long unit = interface[ifno].unit;
 
-	if (strncmp(ifname, "igb", 3) == 0) {
-		unit = strtol(ifname + 3, (char **)NULL, 10);
-		snprintf(buf, sizeof(buf), "sysctl -q -w dev.igb.%d.tipg=%d > /dev/null", unit, ipg);
+	if ((strncmp(drvname, "em", IFNAMSIZ) == 0)
+	    || (strncmp(drvname, "igb", IFNAMSIZ) == 0)
+	    || (strncmp(drvname, "ix", IFNAMSIZ) == 0)) {
+		snprintf(buf, sizeof(buf), "sysctl -q -w dev.%s.%lu.tipg=%d > /dev/null", drvname, unit, ipg);
 
-		system(buf);
+		return system(buf);
 	}
+
+	return -1;
+}
+
+/* set Pause and Pace Register */
+static int
+set_pap(int ifno, unsigned int pap)
+{
+	char buf[256];
+	const char *drvname = interface[ifno].drvname;
+	unsigned long unit = interface[ifno].unit;
+
+	if (strncmp(drvname, "ix", IFNAMSIZ) == 0) {
+		snprintf(buf, sizeof(buf), "sysctl -q -w dev.%s.%ld.pap=%u > /dev/null", drvname, unit, pap);
+
+		return system(buf);
+	}
+
+	return -1;
 }
 #endif /* IPG_HACK */
 
 static void
-reset_ipg(const char *ifname)
+reset_ipg(int ifno)
 {
 	char buf[256];
-	unsigned int unit;
+	const char *drvname = interface[ifno].drvname;
+	unsigned long unit = interface[ifno].unit;
 
 #ifdef IPG_HACK
 	if (!support_ipg)
 		return;
 
-	if (strncmp(ifname, "igb", 3) == 0) {
-		unit = strtol(ifname + 3, (char **)NULL, 10);
-		snprintf(buf, sizeof(buf), "sysctl -q -w dev.igb.%d.tipg=8 > /dev/null", unit);
+	if ((strncmp(drvname, "em", IFNAMSIZ) == 0)
+	    || (strncmp(drvname, "igb", IFNAMSIZ) == 0)) {
+		snprintf(buf, sizeof(buf), "sysctl -q -w dev.%s.%lu.tipg=8 > /dev/null", drvname, unit);
+
+		system(buf);
+	} else if (strncmp(drvname, "ix", IFNAMSIZ) == 0) {
+		int rv;
+
+		/* Try TIPG first */
+		snprintf(buf, sizeof(buf), "sysctl -q -w dev.%s.%lu.tipg=0 > /dev/null", drvname, unit);
+
+		rv = system(buf);
+		if (rv == 0)
+			return;
+
+		/* If failed, try PAP */
+		snprintf(buf, sizeof(buf), "sysctl -q -w dev.%s.%lu.pap=0 > /dev/null", drvname, unit);
 
 		system(buf);
 	}
@@ -482,7 +559,7 @@ update_transmit_max_sustained_pps(int ifno, int ipg)
 {
 	uint32_t maxpps;
 
-	maxpps = LINKSPEED_1GBPS / 8 / PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE - DEFAULT_IFG + ipg);
+	maxpps = interface[ifno].maxlinkspeed / 8 / PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE - DEFAULT_IFG + ipg);
 
 	if (interface[ifno].transmit_pps <= pps_hz)
 		maxpps = interface[ifno].transmit_pps;
@@ -493,6 +570,8 @@ update_transmit_max_sustained_pps(int ifno, int ipg)
 static void
 calc_ipg(int ifno)
 {
+	int new_tipg;
+
 	if (!opt_ipg) {
 		update_transmit_max_sustained_pps(ifno, DEFAULT_IFG);
 		return;
@@ -504,17 +583,17 @@ calc_ipg(int ifno)
 		return;
 	}
 
-	if (strncmp(interface[ifno].ifname, "igb", 3) == 0) {
-		int new_tipg;
+	if ((strncmp(interface[ifno].ifname, "em", 2) == 0)
+	    || (strncmp(interface[ifno].ifname, "igb", 3) == 0)) {
 
 		if (interface[ifno].transmit_pps == 0) {
 			new_tipg = INT_MAX;
 		} else {
 			new_tipg =
-			    ((LINKSPEED_1GBPS / 8) / interface[ifno].transmit_pps) -
+			    ((interface[ifno].maxlinkspeed / 8) / interface[ifno].transmit_pps) -
 			    PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE - DEFAULT_IFG);
 		}
-		new_tipg -= 4;	/* igp(4) NIC, ipg has offset 4 */
+		new_tipg -= 4;	/* igb(4) NIC, ipg has offset 4 */
 
 		new_tipg -= 1;	/* loosely to set IPG against TX underrun */
 
@@ -524,8 +603,58 @@ calc_ipg(int ifno)
 		if (new_tipg >= 1024)
 			new_tipg = 1023;
 
-		set_ipg(interface[ifno].ifname, new_tipg);
-		update_transmit_max_sustained_pps(ifno, new_tipg + 4);
+		set_ipg(ifno, new_tipg);
+		update_transmit_max_sustained_pps(ifno, new_tipg + 5);
+	} else if (strncmp(interface[ifno].ifname, "ix", 2) == 0) {
+		unsigned long bps;
+		uint32_t new_pap;
+		int error;
+
+		if (interface[ifno].transmit_pps == 0) {
+			new_tipg = INT_MAX;
+		} else {
+			new_tipg =
+			    ((interface[ifno].maxlinkspeed / 8) / interface[ifno].transmit_pps) -
+			    PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE - DEFAULT_IFG);
+		}
+		if (new_tipg < 5)
+			new_tipg = 5;
+
+		new_tipg -= 4;	/* ix(4) NIC, ipg has offset 4 */
+
+		new_tipg -= 1;	/* loosely to set IPG against TX underrun */
+
+		if (new_tipg >= 256)
+			new_tipg = 255;
+
+		error = set_ipg(ifno, new_tipg);
+		if (error == 0) {
+			update_transmit_max_sustained_pps(ifno, new_tipg + 5);
+			return;
+		}
+
+		/* 82599 and newer */ 
+		if (interface[ifno].transmit_pps == 0) {
+			bps = 0;
+		} else {
+			bps = PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE) * interface[ifno].transmit_pps * 8;
+		}
+		/*  / 1000 / 1000; */
+
+		if ((bps % (1 * 1000 * 1000 * 1000)) > 0)
+			bps += 1 * 1000 * 1000 * 1000;
+		new_pap = bps / (1 * 1000 * 1000 * 1000);
+
+		if (new_pap == 0)
+			new_pap = 1; /* 1Gbps */
+		if (new_pap >= 10)
+			new_pap = 0;
+
+		error = set_pap(ifno, new_pap);
+		if (error == 0) {
+			update_transmit_max_sustained_pps(ifno, new_tipg + 5);
+			return;
+		}
 	}
 #endif /* IPG_HACK */
 }
@@ -554,8 +683,8 @@ ipg_enable(int enable)
 		calc_ipg(1);
 
 	} else {
-		reset_ipg(interface[0].ifname);
-		reset_ipg(interface[1].ifname);
+		reset_ipg(0);
+		reset_ipg(1);
 		update_transmit_max_sustained_pps(0, DEFAULT_IFG);
 		update_transmit_max_sustained_pps(1, DEFAULT_IFG);
 
@@ -680,10 +809,7 @@ interface_wait_linkup(const char *ifname)
 {
 	int i;
 
-	if (interface_is_active(ifname))
-		return;
-
-	printf("%s: waiting link up.", ifname);
+	printf("%s: waiting link up .", ifname);
 	fflush(stdout);
 	for (i = 100; i >= 0; i--) {
 		if (interface_is_active(ifname))
@@ -693,11 +819,18 @@ interface_wait_linkup(const char *ifname)
 		fflush(stdout);
 	}
 	if (i >= 0) {
-		printf("OK\n");
+		printf(" OK\n");
 	} else {
-		printf("giving up\n");
+		printf(" giving up\n");
 	}
 	fflush(stdout);
+}
+
+void
+interface_init(int ifno)
+{
+	interface[ifno].seqtable = seqtable_new();
+	interface[ifno].seqchecker = seqcheck_new();
 }
 
 void
@@ -712,7 +845,9 @@ interface_setup(int ifno, const char *ifname)
 		getifip6addr(ifname, &interface[ifno].ip6addr, &interface[ifno].ip6addr_mask);
 	}
 
-	if (memcmp(eth_zero, &interface[ifno].gweaddr, ETHER_ADDR_LEN) == 0) {
+	if (interface[ifno].gw_l2random) {
+		fprintf(stderr, "L2 destination address is random\n");
+	} else if (memcmp(eth_zero, &interface[ifno].gweaddr, ETHER_ADDR_LEN) == 0) {
 		/* need to resolv arp */
 		struct ether_addr *mac;
 		char *addrstr = NULL;
@@ -783,35 +918,54 @@ void
 interface_open(int ifno)
 {
 	struct nmreq nmreq;
+	struct netmap_if *nifp;
+	struct netmap_ring *txring, *rxring;
+	int ifno_another;
 
 	memset(&nmreq, 0, sizeof(nmreq));
+	sprintf(interface[ifno].netmapname, "netmap:%s", interface[ifno].ifname);
 
-	char *netmapname = malloc(128);
-	memset(netmapname, 0, 128);
-	sprintf(netmapname, "netmap:%s", interface[ifno].ifname);
-
-	interface[ifno].nm_desc = nm_open(netmapname, &nmreq, 0, NULL);
+	interface[ifno].nm_desc = nm_open(interface[ifno].netmapname, &nmreq, 0, NULL);
 	if (interface[ifno].nm_desc == NULL) {
 		fprintf(stderr, "cannot open /dev/netmap\n");
 		exit(1);
 	}
 
-//printf("first_tx_ring = %d\n", interface[ifno].nm_desc->first_tx_ring);
-//printf("last_tx_ring = %d\n", interface[ifno].nm_desc->last_tx_ring);
-//printf("cur_tx_ring = %d\n", interface[ifno].nm_desc->cur_tx_ring);
-//fflush(stdout);
 
-	if (use_ipv6)
+	nifp = interface[ifno].nm_desc->nifp;
+	txring = NETMAP_TXRING(nifp, 0);
+	rxring = NETMAP_RXRING(nifp, 0);
+
+	printf("%s: %d TX rings * %u slots, %d RX rings * %u slots", interface[ifno].ifname,
+	    interface[ifno].nm_desc->last_tx_ring - interface[ifno].nm_desc->first_tx_ring + 1,
+	    txring->num_slots,
+	    interface[ifno].nm_desc->last_rx_ring - interface[ifno].nm_desc->first_rx_ring + 1,
+	    rxring->num_slots
+	);
+
+	if (interface[ifno].nm_desc->done_mmap)
+		printf(", %u MB mapped",
+		    interface[ifno].nm_desc->memsize / 1024 / 1024);
+	printf("\n");
+
+
+	ifno_another = ifno ^ 1;
+
+	/* for IPv6 multicast packet (ndp, etc), or bridge random L2 address mode */
+	if (use_ipv6 || interface[ifno_another].gw_l2random)
 		interface_promisc(ifno, interface[ifno].ifname, true, &interface[ifno].promisc_save);
 
-	interface[ifno].seqchecker = seqcheck_new();
 	interface[ifno].opened = 1;
 }
 
 void
 interface_close(int ifno)
 {
-	if (use_ipv6)
+	int ifno_another;
+
+	ifno_another = ifno ^ 1;
+
+	if (use_ipv6 || interface[ifno_another].gw_l2random)
 		interface_promisc(ifno, interface[ifno].ifname, interface[ifno].promisc_save, NULL);
 
 #if 0	/* XXX */
@@ -842,11 +996,11 @@ interface_close(int ifno)
 	nm_close(interface[ifno].nm_desc);
 #endif
 
-	reset_ipg(interface[ifno].ifname);
+	reset_ipg(ifno);
 
 	interface[ifno].opened = 0;
 
-	if (interface[ifno].gwaddr.s_addr != 0) {
+	if (interface[ifno].af_gwaddr != 0) {
 		memset(&interface[ifno].gweaddr, 0, ETHER_ADDR_LEN);
 	}
 }
@@ -1057,6 +1211,8 @@ interface_receive(int ifno)
 				if (ip6->ip6_nxt == IPPROTO_ICMPV6) {
 					struct icmp6_hdr *icmp6 = (struct icmp6_hdr *)(ip6 + 1);	/* XXX: no support extension header */
 
+					interface[ifno].counter.rx_icmp++;
+
 					switch (icmp6->icmp6_type) {
 					case ICMP6_DST_UNREACH:
 						interface[ifno].counter.rx_icmpunreach++;
@@ -1104,6 +1260,8 @@ interface_receive(int ifno)
 				if (ip->ip_p == IPPROTO_ICMP) {
 					struct icmp *icmp = (struct icmp *)((char *)ip + ip->ip_hl * 4);
 
+					interface[ifno].counter.rx_icmp++;
+
 					switch (icmp->icmp_type) {
 					case ICMP_UNREACH:
 						interface[ifno].counter.rx_icmpunreach++;
@@ -1141,9 +1299,10 @@ interface_receive(int ifno)
 			if ((opt_udp && (udp != NULL)) || (opt_tcp && (tcp != NULL))) {
 				/* check sequence */
 				struct seqdata *seqdata;
+				struct sequence_record *seqrecord;
 				uint64_t seq, seqflow, nskip;
 				uint32_t flowid;
-				struct timespec ts, ts_delta;
+				struct timespec ts_delta;
 				double latency;
 
 				if (is_ipv6)
@@ -1156,45 +1315,47 @@ interface_receive(int ifno)
 					interface[ifno].counter.rx_other++;
 
 				} else {
-					timespec_unpack32(seqdata->time32, &ts);
-
-					ts_delta = curtime;
-					timespecsub(&ts_delta, &ts);
-					ts_delta.tv_sec &= 0xff;
-					latency = ts_delta.tv_sec / 1000 + ts_delta.tv_nsec / 1000000.0;
-
-					interface[ifno].counter.latency_sum += latency;
-					interface[ifno].counter.latency_npkt++;
-
-					interface[ifno].counter.latency_avg =
-					    interface[ifno].counter.latency_sum / 
-					    interface[ifno].counter.latency_npkt;
-
-
-					if ((interface[ifno].counter.latency_min == 0) ||
-					    (interface[ifno].counter.latency_min > latency))
-						interface[ifno].counter.latency_min = latency;
-					if (interface[ifno].counter.latency_max < latency)
-						interface[ifno].counter.latency_max = latency;
-
 					seq = seqdata->seq;
-					seqflow = seqdata->seq_perflow;
-					flowid = seqdata->seq_flowid;
-					if (get_flowid_max(ifno) >= flowid)
-						nskip = seqcheck_receive(interface[ifno].seqchecker_perflow[flowid], seqflow);
+					seqrecord = seqtable_get(interface[ifno].seqtable, seq);
 
-					nskip = seqcheck_receive(interface[ifno].seqchecker, seq);
+					if ((seqrecord == NULL) || seqrecord->seq != seq) {
+						interface[ifno].counter.rx_expire++;
+					} else {
+						ts_delta = curtime;
+						timespecsub(&ts_delta, &seqrecord->ts);
+						ts_delta.tv_sec &= 0xff;
+						latency = ts_delta.tv_sec / 1000 + ts_delta.tv_nsec / 1000000.0;
+
+						interface[ifno].counter.latency_sum += latency;
+						interface[ifno].counter.latency_npkt++;
+						interface[ifno].counter.latency_avg =
+						    interface[ifno].counter.latency_sum / 
+						    interface[ifno].counter.latency_npkt;
+
+						if ((interface[ifno].counter.latency_min == 0) ||
+						    (interface[ifno].counter.latency_min > latency))
+							interface[ifno].counter.latency_min = latency;
+						if (interface[ifno].counter.latency_max < latency)
+							interface[ifno].counter.latency_max = latency;
+
+						flowid = seqrecord->flowid;
+						seqflow = seqrecord->flowseq;
+						if (get_flowid_max(ifno) >= flowid)
+							nskip = seqcheck_receive(interface[ifno].seqchecker_perflow[flowid], seqflow);
+
+						nskip = seqcheck_receive(interface[ifno].seqchecker, seq);
 #if 0
-					/* DEBUG */
-					if (nskip > 2) {
-						printf("<seq=%llu, nskip=%llu, tx0=%llu, tx1=%llu>",
-						    (unsigned long long)seq,
-						    (unsigned long long)nskip,
-						    (unsigned long long)interface[0].sequence_tx,
-						    (unsigned long long)interface[1].sequence_tx);
-						dumpstr(buf, len);
-					}
+						/* DEBUG */
+						if (nskip > 2) {
+							printf("<seq=%llu, nskip=%llu, tx0=%llu, tx1=%llu>",
+							    (unsigned long long)seq,
+							    (unsigned long long)nskip,
+							    (unsigned long long)interface[0].sequence_tx,
+							    (unsigned long long)interface[1].sequence_tx);
+							dumpstr(buf, len);
+						}
 #endif
+					}
 				}
 			}
 		}
@@ -1209,40 +1370,47 @@ interface_transmit(int ifno)
 {
 	char *buf;
 	unsigned int cur, nspace, npkt, n;
+#ifdef USE_MULTI_TX_QUEUE
+	int i;
+#endif
 	struct netmap_if *nifp;
 	struct netmap_ring *txring;
 	int sentpkttype;
-	struct timespec curtime;
 
 	nifp = interface[ifno].nm_desc->nifp;
-	txring = NETMAP_TXRING(nifp, 0);
-
-	nspace = nm_ring_space(txring);
 	npkt = interface_need_transmit(ifno);
-	n = MIN(nspace, npkt);
-	n = MIN(n, opt_npkt_sync);
+	npkt = MIN(npkt, opt_npkt_sync);
 
-#if 0
-	printf("nspace=%d, npkt=%d\n", nspace, npkt);
+	clock_gettime(CLOCK_MONOTONIC, &currenttime_tx);
+
+#ifdef USE_MULTI_TX_QUEUE
+	for (i = interface[ifno].nm_desc->first_tx_ring;
+	    i <= interface[ifno].nm_desc->last_tx_ring; i++) {
+
+		txring = NETMAP_TXRING(nifp, i);
+#else
+		txring = NETMAP_TXRING(nifp, 0);
 #endif
+		nspace = nm_ring_space(txring);
+		n = MIN(nspace, npkt);
 
-	clock_gettime(CLOCK_MONOTONIC, &curtime);
-	currenttime32 = timespec_pack32(&curtime);
+		for (cur = txring->cur; n > 0; n--, cur = nm_ring_next(txring, cur)) {
+			/* transmit packet */
+			buf = NETMAP_BUF(txring, txring->slot[cur].buf_idx);
 
-	for (cur = txring->cur; n > 0; n--, cur = nm_ring_next(txring, cur)) {
-		/* transmit packet */
-		buf = NETMAP_BUF(txring, txring->slot[cur].buf_idx);
+			sentpkttype = interface_load_transmit_packet(ifno, buf, &txring->slot[cur].len);
+			if (sentpkttype < 0)
+				break;
 
-		sentpkttype = interface_load_transmit_packet(ifno, buf, &txring->slot[cur].len);
-		if (sentpkttype < 0)
-			break;
+			txring->slot[cur].flags = 0;
 
-		interface[ifno].counter.tx_byte += PKTSIZE2FRAMESIZE(txring->slot[cur].len);
-		interface[ifno].counter.tx++;
-
-		txring->slot[cur].flags = (n == 1) ? 0 : NS_MOREFRAG;
+			interface[ifno].counter.tx_byte += PKTSIZE2FRAMESIZE(txring->slot[cur].len);
+			interface[ifno].counter.tx++;
+		}
+		txring->head = txring->cur = cur;
+#ifdef USE_MULTI_TX_QUEUE
 	}
-	txring->head = txring->cur = cur;
+#endif
 
 	return 0;
 }
@@ -1303,8 +1471,11 @@ interface_statistics_json(int ifno, char *buf, int buflen)
 	    "\"RXflowcontrol\":%llu,"
 	    "\"RXarp\":%llu,"
 	    "\"RXother\":%llu,"
+	    "\"RXicmp\":%llu,"
+	    "\"RXicmpecho\":%llu,"
 	    "\"RXicmpunreach\":%llu,"
 	    "\"RXicmpredirect\":%llu,"
+	    "\"RXicmpother\":%llu,"
 
 	    "\"latency-max\":%.8f,"
 	    "\"latency-min\":%.8f,"
@@ -1337,8 +1508,11 @@ interface_statistics_json(int ifno, char *buf, int buflen)
 	    (unsigned long long)interface[ifno].counter.rx_flow,
 	    (unsigned long long)interface[ifno].counter.rx_arp,
 	    (unsigned long long)interface[ifno].counter.rx_other,
+	    (unsigned long long)interface[ifno].counter.rx_icmp,
+	    (unsigned long long)interface[ifno].counter.rx_icmpecho,
 	    (unsigned long long)interface[ifno].counter.rx_icmpunreach,
 	    (unsigned long long)interface[ifno].counter.rx_icmpredirect,
+	    (unsigned long long)interface[ifno].counter.rx_icmpother,
 
 	    interface[ifno].counter.latency_max,
 	    interface[ifno].counter.latency_min,
@@ -1362,7 +1536,7 @@ build_json_statistics(unsigned int *lenp)
 	len = 0;
 	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, "{\"apiversion\":\"1.2\"");
 	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, ",\"time\":%.8f",
-	    currenttime.tv_sec + currenttime.tv_nsec / 1000000000.0);
+	    currenttime_main.tv_sec + currenttime_main.tv_nsec / 1000000000.0);
 
 	len += snprintf(jsonbuf + len, JSON_BUFSIZE - len, ",\"statistics\":[");
 	if (len <= JSON_BUFSIZE) {
@@ -1400,10 +1574,12 @@ sighandler_alrm(int signo)
 	if (_nhz >= pps_hz)
 		_nhz = 0;
 
-	if ((nhz + 1) >= pps_hz) {
-		/* this block called 1Hz */
+	clock_gettime(CLOCK_MONOTONIC, &currenttime_main);
 
-		clock_gettime(CLOCK_MONOTONIC, &currenttime);
+	if ((nhz + 1) >= pps_hz) {
+		/*
+		 * this block called 1Hz
+		 */
 
 		/* update dropcounter */
 		for (i = 0; i < 2; i++) {
@@ -1501,8 +1677,11 @@ quit(int fromsig)
 	interface_close(0);
 	interface_close(1);
 
-	if (opt_rfc2544)
+	if (opt_rfc2544) {
 		rfc2544_showresult();
+		if (opt_rfc2544_output_json != NULL)
+			rfc2544_showresult_json(opt_rfc2544_output_json);
+	}
 
 	if (fromsig)
 		_exit(1);
@@ -1550,7 +1729,7 @@ usage(void)
 	fprintf(stderr, "	-S <script>			autotest script\n");
 	fprintf(stderr, "	-L <log>			output statistics to logfile\n");
 	fprintf(stderr, "\n");
-	fprintf(stderr, "	-s <size>			specify pktsize (udp:46-1500, tcp:58-1500)\n");
+	fprintf(stderr, "	-s <size>			specify pktsize (IPv4:46-1500, IPv6:tcp:54-1500)\n");
 	fprintf(stderr, "	-p <pps>			specify pps\n");
 	fprintf(stderr, "	-f				full-duplex mode\n");
 	fprintf(stderr, "\n");
@@ -1576,9 +1755,10 @@ usage(void)
 	fprintf(stderr, "	--rfc2544			rfc2544 test mode\n");
 	fprintf(stderr, "	--rfc2544-slowstart		increase pps step-by-step (default: binary-search)\n");
 	fprintf(stderr, "	--rfc2544-tolerable-error-rate <percent>\n");
-	fprintf(stderr, "					rfc2544 tolerable error rate (default: 0)\n");
+	fprintf(stderr, "					rfc2544 tolerable error rate (default: 0.00)\n");
 	fprintf(stderr, "	--rfc2544-trial-duration <sec>	rfc2544 trial duration time (default: 60)\n");
 	fprintf(stderr, "	--rfc2544-pktsize <size>	test only specified pktsize. (default: 46-1500)\n");
+	fprintf(stderr, "	--rfc2544-output-json <file>	output rfc2544 results as json file format\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "	-D <file>			debug. dump all generated packets to <file> as tcpdump file format\n");
 	exit(1);
@@ -1662,31 +1842,34 @@ genscript_play(int unsigned n)
 
 	period_left--;
 	if (period_left <= 0) {
-		nth_test++;
-		genitem = genscript_get_item(genscript, nth_test);
-		if (genitem == NULL) {
-			quit(false);
-			return;
-		}
+		do {
+			nth_test++;
+			genitem = genscript_get_item(genscript, nth_test);
+			if (genitem == NULL) {
+				quit(false);
+				return;
+			}
 
-		period_left = genitem->period;
+			period_left = genitem->period;
 
-		switch (genitem->cmd) {
-		case GENITEM_CMD_RESET:
-			statistics_clear();
-			break;
-		case GENITEM_CMD_NOP:
-			break;
+			switch (genitem->cmd) {
+			case GENITEM_CMD_RESET:
+				statistics_clear();
+				break;
+			case GENITEM_CMD_NOP:
+				break;
 
-		case GENITEM_CMD_TX0SET:
-			setpktsize(0, genitem->pktsize);
-			setpps(0, genitem->pps);
-			break;
-		case GENITEM_CMD_TX1SET:
-			setpktsize(1, genitem->pktsize);
-			setpps(1, genitem->pps);
-			break;
-		}
+			case GENITEM_CMD_TX0SET:
+				setpktsize(0, genitem->pktsize);
+				setpps(0, genitem->pps);
+				break;
+			case GENITEM_CMD_TX1SET:
+				setpktsize(1, genitem->pktsize);
+				setpps(1, genitem->pps);
+				break;
+			}
+
+		} while (period_left == 0);
 	}
 }
 
@@ -1792,22 +1975,35 @@ typedef enum {
 
 
 void
-rfc2544_set_pktsize(unsigned int pktsize)
+rfc2544_set_linkspeed(uint64_t maxlinkspeed)
+{
+	int i;
+
+	for (i = 0; i < rfc2544_ntest; i++) {
+		rfc2544_work[i].maxpps = maxlinkspeed / 8 / (rfc2544_work[i].pktsize + 18 + DEFAULT_IFG + DEFAULT_PREAMBLE);
+	}
+}
+
+void
+rfc2544_set_pktsize(uint64_t maxlinkspeed, unsigned int pktsize)
 {
 	rfc2544_ntest = 1;
 	rfc2544_work[0].pktsize = pktsize;
-	rfc2544_work[0].maxpps = 1000000000 / 8 / (pktsize + 18 + DEFAULT_IFG + DEFAULT_PREAMBLE);
+	rfc2544_work[0].maxpps = maxlinkspeed / 8 / (pktsize + 18 + DEFAULT_IFG + DEFAULT_PREAMBLE);
 }
 
 void
 rfc2544_showresult(void)
 {
-	double mbps;
-	unsigned int pps;
+	double mbps, tmp;
+	unsigned int pps, linkspeed;
 	int i, j;
 
 	/*
 	 * [example]
+	 *
+	 * #1G
+	 *
 	 *	framesize|0M  100M 200M 300M 400M 500M 600M 700M 800M 900M 1Gbps
 	 *	---------+----+----+----+----+----+----+----+----+----+----+
 	 *	      64 |#######################                            ###.##Mbps, #######/########pps
@@ -1829,43 +2025,173 @@ rfc2544_showresult(void)
 	 *	    1280 |##                                                                         #######/########pps, ###.##%
 	 *	    1408 |#                                                                          #######/########pps, ###.##%
 	 *	    1518 |#                                                                          #######/########pps, ###.##%
+	 *
+	 *
+	 * #10G
+	 *
+	 *	framesize|0G  1G   2G   3G   4G   5G   6G   7G   8G   9G   10Gbps
+	 *	---------+----+----+----+----+----+----+----+----+----+----+
+	 *	      64 |#######################                            ####.##Mbps, ########/#########pps
+	 *	     128 |#############################                      ####.##Mbps, ########/#########pps
+	 *	     256 |#############################################      ####.##Mbps, ########/#########pps
+	 *	     512 |#################################################  ####.##Mbps, ########/#########pps
+	 *	    1024 |################################################## ####.##Mbps, ########/#########pps
+	 *	    1280 |################################################## ####.##Mbps, ########/#########pps
+	 *	    1408 |################################################## ####.##Mbps, ########/#########pps
+	 *	    1518 |################################################## ####.##Mbps, ########/#########pps
+	 *	
+	 *	framesize|0   |1m  |2m  |3m  |4m  |5m  |6m  |7m  |8m  |9m  |10m |11m |12m |13m |14m |15m pps
+	 *	---------+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+	 *	      64 |#################################################################          ########/#########pps, ###.##%
+	 *	     128 |#################################                                          ########/#########pps, ###.##%
+	 *	     256 |#################                                                          ########/#########pps, ###.##%
+	 *	     512 |########                                                                   ########/#########pps, ###.##%
+	 *	    1024 |#####                                                                      ########/#########pps, ###.##%
+	 *	    1280 |##                                                                         ########/#########pps, ###.##%
+	 *	    1408 |#                                                                          ########/#########pps, ###.##%
+	 *	    1518 |#                                                                          ########/#########pps, ###.##%
 	 */
+
+
+	 /* check link speed. 1G or 10G? */
+	tmp = 0 ;
+	for (i = 0; i < rfc2544_ntest; i++) {
+		mbps = CALC_MBPS(rfc2544_work[i].pktsize, rfc2544_work[i].curpps);
+		if (tmp < mbps)
+			tmp = mbps;
+	}
+	if (tmp > 1000.0)
+		linkspeed = 10;	/* 10G */
+	else
+		linkspeed = 1;	/* 1G */
+
 
 	printf("\n");
 	printf("\n");
 	printf("rfc2544 tolerable error rate: %.2f%%\n", opt_rfc2544_tolerable_error_rate);
 	printf("rfc2544 trial duration: %d sec\n", opt_rfc2544_trial_duration);
 	printf("\n");
-	printf("framesize|0M  100M 200M 300M 400M 500M 600M 700M 800M 900M 1Gbps\n");
+
+	if (linkspeed == 10)
+		printf("framesize|0G  1G   2G   3G   4G   5G   6G   7G   8G   9G   10Gbps\n");
+	else
+		printf("framesize|0M  100M 200M 300M 400M 500M 600M 700M 800M 900M 1Gbps\n");
 	printf("---------+----+----+----+----+----+----+----+----+----+----+\n");
+
 	for (i = 0; i < rfc2544_ntest; i++) {
 		printf("%8u |", rfc2544_work[i].pktsize + 18);
 
 		mbps = CALC_MBPS(rfc2544_work[i].pktsize, rfc2544_work[i].curpps);
-		for (j = 0; j < mbps / 20; j++)
+		for (j = 0; j < mbps / 20 / linkspeed; j++)
 			printf("#");
 		for (; j < 51; j++)
 			printf(" ");
-		printf("%7.2fMbps, %7u/%7upps\n", mbps, rfc2544_work[i].curpps, rfc2544_work[i].limitpps);
+
+		if (linkspeed == 10)
+			printf("%8.2fMbps, %8u/%8upps\n", mbps, rfc2544_work[i].curpps, rfc2544_work[i].limitpps);
+		else
+			printf("%7.2fMbps, %7u/%7upps\n", mbps, rfc2544_work[i].curpps, rfc2544_work[i].limitpps);
 	}
 	printf("\n");
 
-	printf("framesize|0   |100k|200k|300k|400k|500k|600k|700k|800k|900k|1.0m|1.1m|1.2m|1.3m|1.4m|1.5m pps\n");
+	if (linkspeed == 10)
+		printf("framesize|0   |1m  |2m  |3m  |4m  |5m  |6m  |7m  |8m  |9m  |10m |11m |12m |13m |14m |15m pps\n");
+	else
+		printf("framesize|0   |100k|200k|300k|400k|500k|600k|700k|800k|900k|1.0m|1.1m|1.2m|1.3m|1.4m|1.5m pps\n");
 	printf("---------+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+\n");
 	for (i = 0; i < rfc2544_ntest; i++) {
 		printf("%8u |", rfc2544_work[i].pktsize + 18);
 
 		pps = rfc2544_work[i].curpps;
-		for (j = 0; j < pps / 20000; j++)
+		for (j = 0; j < pps / 20000 / linkspeed; j++)
 			printf("#");
 		for (; j < 75; j++)
 			printf(" ");
-		printf("%7u/%7upps, %6.2f%%\n", rfc2544_work[i].curpps, rfc2544_work[i].limitpps,
-		    rfc2544_work[i].curpps * 100.0 / rfc2544_work[i].limitpps);
+
+		if (linkspeed == 10)
+			printf("%8u/%8upps, %6.2f%%\n", rfc2544_work[i].curpps, rfc2544_work[i].limitpps,
+			    rfc2544_work[i].curpps * 100.0 / rfc2544_work[i].limitpps);
+		else
+			printf("%7u/%7upps, %6.2f%%\n", rfc2544_work[i].curpps, rfc2544_work[i].limitpps,
+			    rfc2544_work[i].curpps * 100.0 / rfc2544_work[i].limitpps);
 	}
 	printf("\n");
 }
 
+void
+rfc2544_showresult_json(char *filename)
+{
+	double bps;
+	int i;
+	FILE *fp;
+
+	/*
+	 * [example]
+	 * {
+	 *     "framesize": {
+	 *         "64": {
+	 *             "bps": "##.######",
+	 *             "curpps": "##",
+	 *             "limitpps": "##"
+	 *         },
+	 *         "128": {
+	 *             "bps": "##.######",
+	 *             "curpps": "##",
+	 *             "limitpps": "##"
+	 *         },
+	 *         "256": {
+	 *             "bps": "##.######",
+	 *             "curpps": "##",
+	 *             "limitpps": "##"
+	 *         },
+	 *         "512": {
+	 *             "bps": "##.######",
+	 *             "curpps": "##",
+	 *             "limitpps": "##"
+	 *         },
+	 *         "1024": {
+	 *             "bps": "##.######",
+	 *             "curpps": "##",
+	 *             "limitpps": "##"
+	 *         },
+	 *         "1280": {
+	 *             "bps": "##.######",
+	 *             "curpps": "##",
+	 *             "limitpps": "##"
+	 *         },
+	 *         "1408": {
+	 *             "bps": "##.######",
+	 *             "curpps": "##",
+	 *             "limitpps": "##"
+	 *         },
+	 *         "1518": {
+	 *             "bps": "##.######",
+	 *             "curpps": "##",
+	 *             "limitpps": "##"
+	 *         }
+	 *     }
+	 * }
+	 *
+	 */
+
+	fp = fopen(filename, "w");
+	fprintf(fp, "{");
+	fprintf(fp, "\"framesize\":{");
+	for (i = 0; i < rfc2544_ntest; i++) {
+		if (0 < i)
+			fprintf(fp, ",");
+		fprintf(fp, "\"%u\":", rfc2544_work[i].pktsize + 18);
+		fprintf(fp, "{");
+		bps = CALC_BPS(rfc2544_work[i].pktsize, rfc2544_work[i].curpps);
+		fprintf(fp, "\"bps\":\"%f\",", bps);
+		fprintf(fp, "\"curpps\":\"%u\",", rfc2544_work[i].curpps);
+		fprintf(fp, "\"limitpps\":\"%u\"", rfc2544_work[i].limitpps);
+		fprintf(fp, "}");
+	}
+	fprintf(fp, "}");
+	fprintf(fp, "}");
+	fclose(fp);
+}
 
 static int
 rfc2544_down_pps(void)
@@ -1929,12 +2255,12 @@ rfc2544_test(int unsigned n)
 		break;
 
 	case RFC2544_WARMUP0:
-		memcpy(&statetime, &currenttime, sizeof(struct timeval));
+		memcpy(&statetime, &currenttime_main, sizeof(struct timeval));
 		statetime.tv_sec += 3;	/* wait 3sec */
 		state = RFC2544_WARMUP;
 		break;
 	case RFC2544_WARMUP:
-		if (timespeccmp(&currenttime, &statetime, <))
+		if (timespeccmp(&currenttime_main, &statetime, <))
 			break;
 		state = RFC2544_RESETTING0;
 		break;
@@ -1959,14 +2285,14 @@ rfc2544_test(int unsigned n)
 			rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest - 1].curpps;
 		}
 
-		memcpy(&statetime, &currenttime, sizeof(struct timeval));
+		memcpy(&statetime, &currenttime_main, sizeof(struct timeval));
 		statetime.tv_sec += 2;	/* wait 2sec */
 		state = RFC2544_RESETTING;
 		break;
 
 	case RFC2544_RESETTING:
 		statistics_clear();
-		if (timespeccmp(&currenttime, &statetime, <))
+		if (timespeccmp(&currenttime_main, &statetime, <))
 			break;
 
 		/* enable transmit */
@@ -1979,7 +2305,7 @@ rfc2544_test(int unsigned n)
 		break;
 
 	case RFC2544_PPSCHANGE:
-		if (timespeccmp(&currenttime, &statetime, <))
+		if (timespeccmp(&currenttime_main, &statetime, <))
 			break;
 
 		statistics_clear();
@@ -2001,7 +2327,7 @@ rfc2544_test(int unsigned n)
 			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
 		}
 
-		memcpy(&statetime, &currenttime, sizeof(struct timeval));
+		memcpy(&statetime, &currenttime_main, sizeof(struct timeval));
 		statetime.tv_sec += opt_rfc2544_trial_duration;
 		state = RFC2544_MEASURING;
 		break;
@@ -2015,15 +2341,23 @@ rfc2544_test(int unsigned n)
 
 			do_down_pps = 1;
 
-		} else if (timespeccmp(&currenttime, &statetime, >)) {
+		} else if (timespeccmp(&currenttime_main, &statetime, >)) {
 			if (interface[0].counter.rx == 0) {
 				do_down_pps = 1;
 			} else {
-				/* no drop. OK! */
-				measure_done = rfc2544_up_pps();
-				if (!measure_done) {
-					setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
-					state = RFC2544_MEASURING0;
+				/* pause frame workaround */
+				const uint64_t pause_detect_threshold = 10000; /* XXXX */
+				if (interface[1].counter.tx_underrun > pause_detect_threshold
+				    && (((interface[1].counter.tx_underrun * 100.0) / interface[1].counter.tx)
+					> opt_rfc2544_tolerable_error_rate)) {
+					do_down_pps = 1;
+				} else {
+					/* no drop. OK! */
+					measure_done = rfc2544_up_pps();
+					if (!measure_done) {
+						setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
+						state = RFC2544_MEASURING0;
+					}
 				}
 			}
 		}
@@ -2033,7 +2367,7 @@ rfc2544_test(int unsigned n)
 			if (!measure_done) {
 				setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
 				statistics_clear();
-				memcpy(&statetime, &currenttime, sizeof(struct timeval));
+				memcpy(&statetime, &currenttime_main, sizeof(struct timeval));
 				statetime.tv_sec += 1;	/* wait 2sec */
 				state = RFC2544_PPSCHANGE;
 			}
@@ -2260,7 +2594,7 @@ control_init_items(struct itemlist *itemlist)
 {
 	static int netmap_api = NETMAP_API;
 
-	itemlist_setvalue(itemlist, ITEMLIST_ID_IPGEN_VERSION, &ipgen_version);
+	itemlist_register_item(itemlist, ITEMLIST_ID_IPGEN_VERSION, NULL, ipgen_version);
 	itemlist_setvalue(itemlist, ITEMLIST_ID_NETMAP_API, &netmap_api);
 
 	itemlist_register_item(itemlist, ITEMLIST_ID_IFNAME0, NULL, interface[0].decorated_ifname);
@@ -2288,6 +2622,9 @@ control_init_items(struct itemlist *itemlist)
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_RX_FLOW, NULL, &interface[1].counter.rx_flow);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_RX_ARP, NULL, &interface[0].counter.rx_arp);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_RX_ARP, NULL, &interface[1].counter.rx_arp);
+	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_RX_ICMP, NULL, &interface[0].counter.rx_icmp);
+	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_RX_ICMP, NULL, &interface[1].counter.rx_icmp);
+#if 0
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_RX_ICMPECHO, NULL, &interface[0].counter.rx_icmpecho);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_RX_ICMPECHO, NULL, &interface[1].counter.rx_icmpecho);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_RX_ICMPUNREACH, NULL, &interface[0].counter.rx_icmpunreach);
@@ -2296,6 +2633,7 @@ control_init_items(struct itemlist *itemlist)
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_RX_ICMPREDIRECT, NULL, &interface[1].counter.rx_icmpredirect);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_RX_ICMPOTHER, NULL, &interface[0].counter.rx_icmpother);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_RX_ICMPOTHER, NULL, &interface[1].counter.rx_icmpother);
+#endif
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_RX_OTHER, NULL, &interface[0].counter.rx_other);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF1_RX_OTHER, NULL, &interface[1].counter.rx_other);
 
@@ -2452,13 +2790,13 @@ gentest_main(void)
 	uint64_t npkt, lpkt;
 	static char tmppktbuf[LIBPKT_PKTBUFSIZE] __attribute__((__aligned__(8)));
 
-	clock_gettime(CLOCK_MONOTONIC, &currenttime);
-	lastsec = currenttime.tv_sec;
+	clock_gettime(CLOCK_MONOTONIC, &currenttime_main);
+	lastsec = currenttime_main.tv_sec;
 
 	for (;;) {
-		clock_gettime(CLOCK_MONOTONIC, &currenttime);
-		if (lastsec != currenttime.tv_sec) {
-			lastsec = currenttime.tv_sec;
+		clock_gettime(CLOCK_MONOTONIC, &currenttime_main);
+		if (lastsec != currenttime_main.tv_sec) {
+			lastsec = currenttime_main.tv_sec;
 			break;
 		}
 	}
@@ -2477,7 +2815,7 @@ gentest_main(void)
 	build_template_packet_ipv4(0, pktbuffer_ipv4_udp[0]);
 
 	for (;;) {
-		clock_gettime(CLOCK_MONOTONIC, &currenttime);
+		clock_gettime(CLOCK_MONOTONIC, &currenttime_main);
 
 		touchup_tx_packet(pktbuffer_ipv4_udp[0], 0);
 
@@ -2487,8 +2825,8 @@ gentest_main(void)
 			ip4pkt_test_cksum(tmppktbuf, interface[0].pktsize + ETHHDRSIZE);
 
 		npkt++;
-		if (lastsec != currenttime.tv_sec) {
-			lastsec = currenttime.tv_sec;
+		if (lastsec != currenttime_main.tv_sec) {
+			lastsec = currenttime_main.tv_sec;
 			nsec++;
 
 			printf("%llu pkt generated.",
@@ -2526,6 +2864,7 @@ static struct option longopts[] = {
 	{	"rfc2544-slowstart",		no_argument,		0,	0	},
 	{	"rfc2544-trial-duration",	required_argument,	0,	0	},
 	{	"rfc2544-pktsize",		required_argument,	0,	0	},
+	{	"rfc2544-output-json",	required_argument,	0,	0	},
 	{	NULL,				0,			NULL,	0	}
 };
 
@@ -2535,18 +2874,16 @@ main(int argc, char *argv[])
 	int ifnum[2] = { 0, 1 };
 	unsigned int i, j;
 	int ch, optidx;
+	int pps;
 	int rc;
-	char ifname[2][64];
+	char ifname[2][IFNAMSIZ];
+	char drvname[2][IFNAMSIZ];
+	unsigned long unit[2];
 	char *testscript = NULL;
+	uint64_t maxlinkspeed;
 
-	printf("ipgen v%.2f\n", ipgen_version);
+	printf("ipgen v%s\n", ipgen_version);
 
-#ifdef IPG_HACK
-	if (system("sysctl -q dev.igb.0.tipg > /dev/null") == 0) {
-		support_ipg = 1;
-		printf("igb(4) TIPG feature supported\n");
-	}
-#endif
 	printf("\n");
 
 	/* XXX */
@@ -2555,10 +2892,12 @@ main(int argc, char *argv[])
 	memset(ifname, 0, sizeof(ifname));
 
 	/* initialize instances */
-	memset(&interface, 0, sizeof(interface));
+	pps = -1;
+	maxlinkspeed = 0;
 	for (i = 0; i < 2; i++) {
+		memset(&interface[i], 0, sizeof(interface));
+		interface_init(i);
 		pbufq_init(&interface[i].pbufq);
-		setpps(i, 1488095);	/* default maximum pps */
 		interface[i].pktsize = min_pktsize;
 	}
 
@@ -2597,13 +2936,35 @@ main(int argc, char *argv[])
 					usage();
 				strncpy(ifname[ifno], p, sizeof(ifname[0]));
 
+#ifdef IPG_HACK
+				if (getifunit(ifname[ifno], drvname[ifno], &unit[ifno]) != -1) {
+					char strbuf[256];
+
+					snprintf(strbuf, sizeof(strbuf), "sysctl -q dev.%s.%lu.tipg > /dev/null", drvname[ifno], unit[ifno]);
+					if (system(strbuf) == 0) {
+						support_ipg = 1;
+						printf("%s%lu TIPG feature supported\n", drvname[ifno], unit[ifno]);
+					} else {
+						snprintf(strbuf, sizeof(strbuf), "sysctl -q dev.%s.%lu.pap > /dev/null", drvname[ifno], unit[ifno]);
+						if (system(strbuf) == 0) {
+							support_ipg = 1;
+							printf("%s%lu PAP feature supported\n", drvname[ifno], unit[ifno]);
+						} else
+							printf("%s%lu Neither TIPG feature nor PAP feature supported\n", drvname[ifno], unit[ifno]);
+					}
+				}
+#endif
 				p = strsep(&s, ",");
 				/* parse IPv4 or IPv6 or MAC-ADDRESS */
 				if (inet_pton(AF_INET, p, &interface[ifno].gwaddr) == 1) {
 					interface[ifno].af_gwaddr = AF_INET;
 				} else if (inet_pton(AF_INET6, p, &interface[ifno].gw6addr) == 1) {
 					interface[ifno].af_gwaddr = AF_INET6;
-				} else if (ether_aton_r(p, &interface[ifno].gweaddr) == NULL) {
+				} else if (ether_aton_r(p, &interface[ifno].gweaddr) != NULL) {
+					/* gweaddr is ok */
+				} else if (strcmp(p, "random") == 0) {
+					interface[ifno].gw_l2random = 1;
+				} else {
 					fprintf(stderr, "Cannot resolve: %s\n", p);
 					usage();
 				}
@@ -2693,12 +3054,7 @@ main(int argc, char *argv[])
 			break;
 
 		case 'p':
-			{
-				int pps;
-				pps = strtol(optarg, (char **)NULL, 10);
-				setpps(0, pps);
-				setpps(1, pps);
-			}
+			pps = strtol(optarg, (char **)NULL, 10);
 			break;
 		case 'S':
 			testscript = optarg;
@@ -2787,7 +3143,8 @@ main(int argc, char *argv[])
 					fprintf(stderr, "illegal packet size: %s\n", optarg);
 					exit(1);
 				}
-				rfc2544_set_pktsize(opt_rfc2544_pktsize);
+			} else if (strcmp(longopts[optidx].name, "rfc2544-output-json") == 0) {
+				opt_rfc2544_output_json = optarg;
 			} else {
 				usage();
 			}
@@ -2844,16 +3201,6 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	if (testscript != NULL) {
-		genscript = genscript_new(testscript);
-		if (genscript == NULL)
-			err(2, "%s", testscript);
-
-		setpps(0, 0);
-		setpps(1, 0);
-	}
-
-
 	if (ifname[0][0] == '\0')
 		opt_txonly = 1;
 	if (ifname[1][0] == '\0')
@@ -2870,7 +3217,22 @@ main(int argc, char *argv[])
 		if (opt_rxonly && i == 1)
 			continue;
 
-		if ((memcmp(eth_zero, &interface[i].gweaddr, ETHER_ADDR_LEN) == 0) &&
+		strcpy(interface[i].drvname, drvname[i]);
+		interface[i].unit = unit[i];
+
+		/* Set maxlinkspeed */
+		for (j = 0; j < sizeof(ifflags)/sizeof(ifflags[0]); j++) {
+			if (strncmp(ifname[i], ifflags[j].drvname,
+			    strnlen(ifflags[j].drvname, IFNAMSIZ)) == 0) {
+				interface[i].maxlinkspeed = ifflags[j].maxlinkspeed;
+				break;
+			}
+		}
+		if (interface[i].maxlinkspeed == 0)
+			interface[i].maxlinkspeed = LINKSPEED_1GBPS;
+
+		if ((interface[i].af_gwaddr != 0) &&
+		    (memcmp(eth_zero, &interface[i].gweaddr, ETHER_ADDR_LEN) == 0) &&
 		    ipv4_iszero(&interface[i].gwaddr) &&
 		    ipv6_iszero(&interface[i].gw6addr)) {
 			fprintf(stderr, "gateway address is unknown. specify gw address with -T and -R\n");
@@ -2878,6 +3240,35 @@ main(int argc, char *argv[])
 		}
 	}
 
+	if (pps == -1) {
+		for (i = 0; i < 2; i++)
+			if (interface[i].maxlinkspeed == LINKSPEED_1GBPS)
+				pps = 1488095;
+			else
+				pps = 14880952;
+	}
+	for (i = 0; i < 2; i++) {
+		if (maxlinkspeed < interface[i].maxlinkspeed)
+			maxlinkspeed = interface[i].maxlinkspeed;
+	}
+
+	if (opt_rfc2544)
+		rfc2544_set_linkspeed(maxlinkspeed);
+
+	if (opt_rfc2544_pktsize)
+		rfc2544_set_pktsize(maxlinkspeed, opt_rfc2544_pktsize);
+
+	if (testscript != NULL) {
+		genscript = genscript_new(testscript);
+		if (genscript == NULL)
+			err(2, "%s", testscript);
+
+		setpps(0, 0);
+		setpps(1, 0);
+	} else {
+		setpps(0, pps);
+		setpps(1, pps);
+	}
 
 	/* check console size */
 	{
@@ -2944,13 +3335,16 @@ main(int argc, char *argv[])
 			if (len > 0)
 				line[len - 1] = '\0';
 
+			if (line[0] == '\0')	/* blank */
+				continue;
+
 			/* for TX */
-			if (parse_flowstr(interface[1].adrlist, opt_tcp ? IPPROTO_TCP : IPPROTO_UDP, line, 0) != 0) {
+			if (parse_flowstr(interface[1].adrlist, opt_tcp ? IPPROTO_TCP : IPPROTO_UDP, line, false) != 0) {
 				fprintf(stderr, "%s:%lld: cannot parse: \"%s\"\n", opt_flowlist, (unsigned long long)lineno, line);
 				anyerror++;
 			}
 			/* for RX */
-			parse_flowstr(interface[0].adrlist, opt_tcp ? IPPROTO_TCP : IPPROTO_UDP, line, 1);
+			parse_flowstr(interface[0].adrlist, opt_tcp ? IPPROTO_TCP : IPPROTO_UDP, line, true);
 		}
 		fclose(fh);
 		if (anyerror)
@@ -3305,10 +3699,28 @@ main(int argc, char *argv[])
 	if (!opt_txonly) {
 		pthread_create(&txthread0, NULL, tx_thread_main, &ifnum[0]);
 		pthread_create(&rxthread0, NULL, rx_thread_main, &ifnum[0]);
+#ifdef __FreeBSD__
+		{
+			char buf[128];
+			snprintf(buf, sizeof(buf), "%s-tx", interface[0].ifname);
+			pthread_set_name_np(txthread0, buf);
+			snprintf(buf, sizeof(buf), "%s-rx", interface[0].ifname);
+			pthread_set_name_np(rxthread0, buf);
+		}
+#endif
 	}
 	if (!opt_rxonly) {
 		pthread_create(&txthread1, NULL, tx_thread_main, &ifnum[1]);
 		pthread_create(&rxthread1, NULL, rx_thread_main, &ifnum[1]);
+#ifdef __FreeBSD__
+		{
+			char buf[128];
+			snprintf(buf, sizeof(buf), "%s-tx", interface[1].ifname);
+			pthread_set_name_np(txthread1, buf);
+			snprintf(buf, sizeof(buf), "%s-rx", interface[1].ifname);
+			pthread_set_name_np(rxthread1, buf);
+		}
+#endif
 	}
 
 	/* update transmit flags */
@@ -3318,7 +3730,7 @@ main(int argc, char *argv[])
 		transmit_set(1, 1);
 
 
-	clock_gettime(CLOCK_MONOTONIC, &currenttime);
+	clock_gettime(CLOCK_MONOTONIC, &currenttime_main);
 
 	(void)sigemptyset(&used_sigset);
 	(void)sigaddset(&used_sigset, SIGALRM);

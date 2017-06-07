@@ -1,8 +1,13 @@
-Index: if_igb.c
+Index: sys/dev/e1000/if_igb.c
 ===================================================================
---- if_igb.c	(revision 292398)
-+++ if_igb.c	(working copy)
-@@ -222,6 +222,7 @@
+--- sys/dev/e1000/if_igb.c	(revision 303182)
++++ sys/dev/e1000/if_igb.c	(working copy)
+@@ -217,16 +217,17 @@
+ static void	igb_handle_link(void *context, int pending);
+ static void	igb_handle_link_locked(struct adapter *);
+ 
+ static void	igb_set_sysctl_value(struct adapter *, const char *,
+ 		    const char *, int *, int);
  static int	igb_set_flowcntl(SYSCTL_HANDLER_ARGS);
  static int	igb_sysctl_dmac(SYSCTL_HANDLER_ARGS);
  static int	igb_sysctl_eee(SYSCTL_HANDLER_ARGS);
@@ -10,7 +15,17 @@ Index: if_igb.c
  
  #ifdef DEVICE_POLLING
  static poll_handler_t igb_poll;
-@@ -547,6 +548,12 @@
+ #endif /* POLLING */
+ 
+ /*********************************************************************
+  *  FreeBSD Device Interface Entry Points
+  *********************************************************************/
+@@ -552,16 +553,22 @@
+ 		if (adapter->hw.phy.media_type == e1000_media_type_copper) {
+ 			if (adapter->hw.mac.type == e1000_i354)
+ 				e1000_set_eee_i354(&adapter->hw, TRUE, TRUE);
+ 			else
+ 				e1000_set_eee_i350(&adapter->hw, TRUE, TRUE);
  		}
  	}
  
@@ -23,7 +38,17 @@ Index: if_igb.c
  	/*
  	** Start from a known state, this is
  	** important in reading the nvm and
-@@ -6377,3 +6384,23 @@
+ 	** mac from that.
+ 	*/
+ 	e1000_reset_hw(&adapter->hw);
+ 
+ 	/* Make sure we have a good EEPROM before we read from it */
+@@ -6434,8 +6441,28 @@
+ 	if (error || req->newptr == NULL)
+ 		return (error);
+ 	IGB_CORE_LOCK(adapter);
+ 	adapter->hw.dev_spec._82575.eee_disable = (value != 0);
+ 	igb_init_locked(adapter);
  	IGB_CORE_UNLOCK(adapter);
  	return (0);
  }
