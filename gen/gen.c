@@ -82,6 +82,19 @@
 #define MAXFLOWNUM		(1024 * 1024)
 
 
+#undef DEBUG
+#ifdef DEBUG
+FILE *debugfh;
+#define DEBUGOPEN(file)		do { debugfh = fopen(file, "w"); } while (0)
+#define DEBUGLOG(fmt, args...)	do { fprintf(debugfh, fmt, ## args); fflush(debugfh); } while (0)
+#define DEBUGCLOSE()		fclose(debugfh)
+#else
+#define DEBUGOPEN(file)		((void)0)
+#define DEBUGLOG(args...)	((void)0)
+#define DEBUGCLOSE()		((void)0)
+#endif
+
+
 static void rfc2544_showresult(void);
 static void rfc2544_showresult_json(char *);
 static void quit(int);
@@ -2356,10 +2369,21 @@ rfc2544_test(int unsigned n)
 		    (((interface[0].counter.rx_seqdrop * 100.0) / interface[0].counter.rx) > opt_rfc2544_tolerable_error_rate)) {
 
 			do_down_pps = 1;
+			DEBUGLOG("RFC2544: pktsize=%d, pps=%d (%.2fMbps), rx=%llu, drop=%llu, drop-rate=%.3f\n",
+			    rfc2544_work[rfc2544_nthtest].pktsize,
+			    rfc2544_work[rfc2544_nthtest].curpps,
+			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps),
+			    (unsigned long long)interface[0].counter.rx,
+			    (unsigned long long)interface[0].counter.rx_seqdrop,
+			    interface[0].counter.rx_seqdrop * 100.0 / interface[0].counter.rx);
+			DEBUGLOG("RFC2544: down pps\n");
 
 		} else if (timespeccmp(&currenttime_main, &statetime, >)) {
 			if (interface[0].counter.rx == 0) {
 				do_down_pps = 1;
+				DEBUGLOG("RFC2544: pktsize=%d, pps=%d, no packet received. down pps\n",
+				    rfc2544_work[rfc2544_nthtest].pktsize,
+				    rfc2544_work[rfc2544_nthtest].curpps);
 			} else {
 				/* pause frame workaround */
 				const uint64_t pause_detect_threshold = 10000; /* XXXX */
@@ -2367,10 +2391,17 @@ rfc2544_test(int unsigned n)
 				    && (((interface[1].counter.tx_underrun * 100.0) / interface[1].counter.tx)
 					> opt_rfc2544_tolerable_error_rate)) {
 					do_down_pps = 1;
+					DEBUGLOG("RFC2544: pktsize=%d, pps=%d, pause frame workaround. down pps\n",
+					    rfc2544_work[rfc2544_nthtest].pktsize,
+					    rfc2544_work[rfc2544_nthtest].curpps);
 				} else {
 					/* no drop. OK! */
 					measure_done = rfc2544_up_pps();
 					if (!measure_done) {
+						DEBUGLOG("RFC2544: pktsize=%d, pps=%d, no drop. up pps\n",
+						    rfc2544_work[rfc2544_nthtest].pktsize,
+						    rfc2544_work[rfc2544_nthtest].curpps);
+
 						setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
 						statistics_clear();
 						memcpy(&statetime, &currenttime_main, sizeof(struct timeval));
@@ -2900,6 +2931,8 @@ main(int argc, char *argv[])
 	unsigned long unit[2];
 	char *testscript = NULL;
 	uint64_t maxlinkspeed;
+
+	DEBUGOPEN("ipgen-debug.log");
 
 	printf("ipgen v%s\n", ipgen_version);
 
@@ -3791,5 +3824,6 @@ main(int argc, char *argv[])
 	/* CUI/web interface thread */
 	control_thread_main(NULL);
 
-	return 1;
+	DEBUGCLOSE();
+	return 0;
 }
