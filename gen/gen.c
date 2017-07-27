@@ -114,7 +114,7 @@ int opt_ipg = 0;
 int opt_rfc2544 = 0;
 double opt_rfc2544_tolerable_error_rate = 0.0;	/* default 0.00 % */
 int opt_rfc2544_trial_duration = 60;	/* default 60sec */
-int opt_rfc2544_pktsize = 0;		/* default: all range */
+char *opt_rfc2544_pktsize;
 int opt_rfc2544_slowstart = 0;
 char *opt_rfc2544_output_json = NULL;
 
@@ -1757,7 +1757,8 @@ usage(void)
 	fprintf(stderr, "	--rfc2544-tolerable-error-rate <percent>\n");
 	fprintf(stderr, "					rfc2544 tolerable error rate (default: 0.00)\n");
 	fprintf(stderr, "	--rfc2544-trial-duration <sec>	rfc2544 trial duration time (default: 60)\n");
-	fprintf(stderr, "	--rfc2544-pktsize <size>	test only specified pktsize. (default: 46-1500)\n");
+	fprintf(stderr, "	--rfc2544-pktsize <size>[,<size>...]]\n");
+	fprintf(stderr, "					test only specified pktsize. (default: 46,110,494,1006,1262,1390,1500)\n");
 	fprintf(stderr, "	--rfc2544-output-json <file>	output rfc2544 results as json file format\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "	-D <file>			debug. dump all generated packets to <file> as tcpdump file format\n");
@@ -1946,19 +1947,10 @@ struct rfc2544_work {
 	unsigned int maxup;
 };
 
-struct rfc2544_work rfc2544_work[] = {
-	{	.pktsize = 64 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 1488095	},
-	{	.pktsize = 128 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 844594	},
-	{	.pktsize = 256 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 452898	},
-	{	.pktsize = 512 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 234962	},
-	{	.pktsize = 1024 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 119731	},
-	{	.pktsize = 1280 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 96153		},
-	{	.pktsize = 1408 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 87535		},
-	{	.pktsize = 1518 - ETHHDRSIZE - FCS,	.minpps = 1,	.maxpps = 81274		}
-};
-
+#define RFC2544_MAXTESTNUM	64
+struct rfc2544_work rfc2544_work[RFC2544_MAXTESTNUM];
+static int rfc2544_ntest = 0;
 static int rfc2544_nthtest = 0;
-static int rfc2544_ntest = (sizeof(rfc2544_work) / sizeof(rfc2544_work[0]));
 
 typedef enum {
 	RFC2544_START,
@@ -1973,23 +1965,47 @@ typedef enum {
 	RFC2544_DONE
 } rfc2544_state_t;
 
+void
+rfc2544_add_test(uint64_t maxlinkspeed, unsigned int pktsize)
+{
+	if (rfc2544_ntest >= RFC2544_MAXTESTNUM) {
+		fprintf(stderr, "Too many rfc2544 test (max 64). pktsize=%u ignored\n", pktsize);
+		return;
+	}
+	if ((pktsize < (64 - ETHHDRSIZE - FCS)) || (pktsize > 2048 - ETHHDRSIZE - FCS)) {
+		fprintf(stderr, "Illegal packet size: %d. ignored\n", pktsize);
+		return;
+	}
+
+	memset(&rfc2544_work[rfc2544_ntest], 0, sizeof(rfc2544_work[rfc2544_ntest]));
+
+	rfc2544_work[rfc2544_ntest].pktsize = pktsize;
+	rfc2544_work[rfc2544_ntest].minpps = 1;
+	rfc2544_work[rfc2544_ntest].maxpps = maxlinkspeed / 8 / (pktsize + 18 + DEFAULT_IFG + DEFAULT_PREAMBLE);
+	rfc2544_ntest++;
+}
 
 void
-rfc2544_set_linkspeed(uint64_t maxlinkspeed)
+rfc2544_load_default_test(uint64_t maxlinkspeed)
+{
+	rfc2544_ntest = 0;	/* clear table */
+	rfc2544_add_test(maxlinkspeed, 64 - ETHHDRSIZE - FCS);
+	rfc2544_add_test(maxlinkspeed, 128 - ETHHDRSIZE - FCS);
+	rfc2544_add_test(maxlinkspeed, 512 - ETHHDRSIZE - FCS);
+	rfc2544_add_test(maxlinkspeed, 1024 - ETHHDRSIZE - FCS);
+	rfc2544_add_test(maxlinkspeed, 1280 - ETHHDRSIZE - FCS);
+	rfc2544_add_test(maxlinkspeed, 1408 - ETHHDRSIZE - FCS);
+	rfc2544_add_test(maxlinkspeed, 1518 - ETHHDRSIZE - FCS);
+}
+
+void
+rfc2544_calc_param(uint64_t maxlinkspeed)
 {
 	int i;
 
 	for (i = 0; i < rfc2544_ntest; i++) {
 		rfc2544_work[i].maxpps = maxlinkspeed / 8 / (rfc2544_work[i].pktsize + 18 + DEFAULT_IFG + DEFAULT_PREAMBLE);
 	}
-}
-
-void
-rfc2544_set_pktsize(uint64_t maxlinkspeed, unsigned int pktsize)
-{
-	rfc2544_ntest = 1;
-	rfc2544_work[0].pktsize = pktsize;
-	rfc2544_work[0].maxpps = maxlinkspeed / 8 / (pktsize + 18 + DEFAULT_IFG + DEFAULT_PREAMBLE);
 }
 
 void
@@ -3138,11 +3154,7 @@ main(int argc, char *argv[])
 				if (opt_rfc2544_trial_duration < 3)
 					opt_rfc2544_trial_duration = 3;
 			} else if (strcmp(longopts[optidx].name, "rfc2544-pktsize") == 0) {
-				opt_rfc2544_pktsize = strtol(optarg, (char **)NULL, 10);
-				if ((opt_rfc2544_pktsize < 46) || (opt_rfc2544_pktsize > 1500)) {
-					fprintf(stderr, "illegal packet size: %s\n", optarg);
-					exit(1);
-				}
+				opt_rfc2544_pktsize = optarg;
 			} else if (strcmp(longopts[optidx].name, "rfc2544-output-json") == 0) {
 				opt_rfc2544_output_json = optarg;
 			} else {
@@ -3252,11 +3264,27 @@ main(int argc, char *argv[])
 			maxlinkspeed = interface[i].maxlinkspeed;
 	}
 
-	if (opt_rfc2544)
-		rfc2544_set_linkspeed(maxlinkspeed);
+	if (opt_rfc2544_pktsize != NULL) {
+		char buf[128];
+		int pktsize;
+		char *p, *save = NULL;
 
-	if (opt_rfc2544_pktsize)
-		rfc2544_set_pktsize(maxlinkspeed, opt_rfc2544_pktsize);
+		while ((p = getword(opt_rfc2544_pktsize, ',', &save, buf, sizeof(buf))) != NULL) {
+			pktsize = atoi(buf);
+			if ((pktsize < 46) || (pktsize > 1500)) {
+				fprintf(stderr, "illegal packet size in --rfc2544_pktsize: %d\n", pktsize);
+				exit(1);
+			}
+			rfc2544_add_test(maxlinkspeed, pktsize);
+		}
+	}
+
+	if (rfc2544_ntest == 0)
+		rfc2544_load_default_test(maxlinkspeed);
+
+	if (opt_rfc2544)
+		rfc2544_calc_param(maxlinkspeed);
+
 
 	if (testscript != NULL) {
 		genscript = genscript_new(testscript);

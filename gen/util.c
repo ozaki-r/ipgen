@@ -153,6 +153,42 @@ chop(char *p)
 		*--p = '\0';
 }
 
+char *
+getword(char *str, char sep, char **save, char *buf, size_t bufsize)
+{
+	char *s;
+	char c, *d;
+	size_t len;
+
+	s = str;
+	d = buf;
+	len = 0;
+
+	if (*save != NULL)
+		s = *save;
+
+	if (*s == '\0')
+		return NULL;
+
+	for (;;) {
+		c = *s++;
+		if (c == '\0') {
+			*d++ = '\0';
+			*save = --s;
+			break;
+		}
+		if (c == sep) {
+			*d++ = '\0';
+			*save = s;
+			break;
+		}
+
+		if (++len < bufsize)
+			*d++ = c;
+	}
+	return buf;
+}
+
 int
 interface_is_active(const char *ifname)
 {
