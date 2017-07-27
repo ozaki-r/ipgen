@@ -1728,53 +1728,57 @@ sighandler_cont(int signo)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: ipgen [options]\n");
-	fprintf(stderr, "	-R <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n");
-	fprintf(stderr, "					set RX interface\n");
-	fprintf(stderr, "	-T <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n");
-	fprintf(stderr, "					set TX interface\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "	-H <Hz>				specify control Hz (default: 1000)\n");
-	fprintf(stderr, "	-n <npkt>			sync transmit per <npkt>\n");
-	fprintf(stderr, "	--ipg				adapt IPG (Inter Packet Gap) if possible\n");
-	fprintf(stderr, "	--burst				don't set IPG (default)\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "	-S <script>			autotest script\n");
-	fprintf(stderr, "	-L <log>			output statistics to logfile\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "	-s <size>			specify pktsize (IPv4:46-1500, IPv6:tcp:54-1500)\n");
-	fprintf(stderr, "	-p <pps>			specify pps\n");
-	fprintf(stderr, "	-f				full-duplex mode\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "	-v				verbose\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "	-X				packet generation benchmark\n");
-	fprintf(stderr, "	-XX				packet generation benchmark with memcpy\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "	--tcp				generate TCP packet\n");
-	fprintf(stderr, "	--udp				generate UDP packet (default)\n");
-	fprintf(stderr, "	--fragment			generate fragment packet\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "	--allnet			use destination address incrementally\n");
-	fprintf(stderr, "	--saddr <begin>[-<end>]		use source address range (default: TX interface address)\n");
-	fprintf(stderr, "	--daddr <begin>[-<end>]		use destination address range (default: RX interface address)\n");
-	fprintf(stderr, "	--sport <begin>[-<end>]		use source port range (default: 9)\n");
-	fprintf(stderr, "	--dport <begin>[-<end>]		use destination port range (default: 9)\n");
-	fprintf(stderr, "	--flowlist <file>		read flowlist from file\n");
-	fprintf(stderr, "	--flowsort			sort flow list\n");
-	fprintf(stderr, "	--flowdump			dump flow list\n");
-	fprintf(stderr, "	-F <nflow>			limit <nflow>\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "	--rfc2544			rfc2544 test mode\n");
-	fprintf(stderr, "	--rfc2544-slowstart		increase pps step-by-step (default: binary-search)\n");
-	fprintf(stderr, "	--rfc2544-tolerable-error-rate <percent>\n");
-	fprintf(stderr, "					rfc2544 tolerable error rate (default: 0.00)\n");
-	fprintf(stderr, "	--rfc2544-trial-duration <sec>	rfc2544 trial duration time (default: 60)\n");
-	fprintf(stderr, "	--rfc2544-pktsize <size>[,<size>...]]\n");
-	fprintf(stderr, "					test only specified pktsize. (default: 46,110,494,1006,1262,1390,1500)\n");
-	fprintf(stderr, "	--rfc2544-output-json <file>	output rfc2544 results as json file format\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "	-D <file>			debug. dump all generated packets to <file> as tcpdump file format\n");
+	fprintf(stderr,
+	       "\n"
+	       "usage: ipgen [options]\n"
+	       "	-R <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n"
+	       "					set RX interface\n"
+	       "	-T <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n"
+	       "					set TX interface\n"
+	       "\n"
+	       "	-H <Hz>				specify control Hz (default: 1000)\n"
+	       "	-n <npkt>			sync transmit per <npkt>\n"
+	       "	--ipg				adapt IPG (Inter Packet Gap) if possible\n"
+	       "	--burst				don't set IPG (default)\n"
+	       "\n"
+	       "	-S <script>			autotest script\n"
+	       "	-L <log>			output statistics to logfile\n"
+	       "\n"
+	       "	-s <size>			specify pktsize (IPv4:46-1500, IPv6:tcp:54-1500)\n"
+	       "	-p <pps>			specify pps\n"
+	       "	-f				full-duplex mode\n"
+	       "\n"
+	       "	-v				verbose\n"
+	       "\n"
+	       "	-X				packet generation benchmark\n"
+	       "	-XX				packet generation benchmark with memcpy\n"
+	       "\n"
+	       "	--tcp				generate TCP packet\n"
+	       "	--udp				generate UDP packet (default)\n"
+	       "	--fragment			generate fragment packet\n"
+	       "\n"
+	       "	--allnet			use destination address incrementally\n"
+	       "	--saddr <begin>[-<end>]		use source address range (default: TX interface address)\n"
+	       "	--daddr <begin>[-<end>]		use destination address range (default: RX interface address)\n"
+	       "	--sport <begin>[-<end>]		use source port range (default: 9)\n"
+	       "	--dport <begin>[-<end>]		use destination port range (default: 9)\n"
+	       "	--flowlist <file>		read flowlist from file\n"
+	       "	--flowsort			sort flow list\n"
+	       "	--flowdump			dump flow list\n"
+	       "	-F <nflow>			limit <nflow>\n"
+	       "\n"
+	       "	--rfc2544			rfc2544 test mode\n"
+	       "	--rfc2544-slowstart		increase pps step-by-step (default: binary-search)\n"
+	       "	--rfc2544-tolerable-error-rate <percent>\n"
+	       "					rfc2544 tolerable error rate (default: 0.00)\n"
+	       "	--rfc2544-trial-duration <sec>	rfc2544 trial duration time (default: 60)\n"
+	       "	--rfc2544-pktsize <size>[,<size>...]]\n"
+	       "					test only specified pktsize. (default: 46,110,494,1006,1262,1390,1500)\n"
+	       "	--rfc2544-output-json <file>	output rfc2544 results as json file format\n"
+	       "\n"
+	       "	-D <file>			debug. dump all generated packets to <file> as tcpdump file format\n"
+	);
+
 	exit(1);
 }
 
