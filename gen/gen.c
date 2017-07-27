@@ -2212,8 +2212,8 @@ rfc2544_showresult_json(char *filename)
 static int
 rfc2544_down_pps(void)
 {
-	if (rfc2544_work[rfc2544_nthtest].curpps - 1 == rfc2544_work[rfc2544_nthtest].minpps) {
-		rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].minpps;
+	if (rfc2544_work[rfc2544_nthtest].curpps - 1 <= rfc2544_work[rfc2544_nthtest].minpps) {
+		rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].minpps - 1;
 		return 1;
 	}
 
@@ -2372,7 +2372,10 @@ rfc2544_test(int unsigned n)
 					measure_done = rfc2544_up_pps();
 					if (!measure_done) {
 						setpps(1, rfc2544_work[rfc2544_nthtest].curpps);
-						state = RFC2544_MEASURING0;
+						statistics_clear();
+						memcpy(&statetime, &currenttime_main, sizeof(struct timeval));
+						statetime.tv_sec += 1;	/* wait 2sec */
+						state = RFC2544_PPSCHANGE;
 					}
 				}
 			}
