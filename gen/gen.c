@@ -1917,7 +1917,13 @@ control_tty_handler(int fd, struct itemlist *itemlist)
 		if ((c == 'q') || (c == 'Q'))
 			quit(false);
 
-		if (c != 0x0c) {	/*  ^L */
+		if (c != 0x0c) {	/* ^L */
+			/* you can exit from RFC2544 mode by '!' for debug */
+			if (c == '!') {
+				opt_rfc2544 = 0;
+				sprintf(msgbuf, "exiting rfc2544 mode");
+				return;
+			}
 			sprintf(msgbuf, "cannot control in rfc2544 mode");
 			return;
 		}
@@ -2347,10 +2353,11 @@ rfc2544_test(int unsigned n)
 
 	case RFC2544_MEASURING0:
 		if (rfc2544_work[rfc2544_nthtest].prevpps) {
-			sprintf(msgbuf, "measuring pktsize %u, pps %u -> %u (%.4fMbps -> %.4fMbps)",
+			sprintf(msgbuf, "measuring pktsize %u, pps %u -> %u (%+d) (%.4fMbps -> %.4fMbps)",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].prevpps,
 			    rfc2544_work[rfc2544_nthtest].curpps,
+			    rfc2544_work[rfc2544_nthtest].curpps - rfc2544_work[rfc2544_nthtest].prevpps,
 			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].prevpps),
 			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
 		} else {
