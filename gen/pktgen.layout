@@ -9,8 +9,8 @@
     RX: ######################## pkt    RX: ###################### pkt    	id=if0_rx,U64			id=if1_rx,U64
     RX-drop: ################### pkt    RX-drop: ################# pkt    	id=if0_rx_drop,U64		id=if1_rx_drop,U64
     RX-dup: #################### pkt    RX-dup: ################## pkt    	id=if0_rx_dup,U64		id=if1_rx_dup,U64
-    RX-reorder: ################ pkt    RX-reorder: ############## pkt    	id=if0_rx_reorder,U64		id=if1_rx_reorder,U64
     RX-reorder/flow: ########### pkt    RX-reorder/flow: ######### pkt    	id=if0_rx_reorder_flow,U64	id=if1_rx_reorder_flow,U64
+    RX-reorder: ################ pkt    RX-reorder: ############## pkt    	id=if0_rx_reorder,U64		id=if1_rx_reorder,U64
     RX-flowctrl: ############### pkt    RX-flowctrl: ############# pkt    	id=if0_rx_flow,U64		id=if1_rx_flow,U64
     RX-arp/ndp: ################ pkt    RX-arp/ndp: ############## pkt    	id=if0_rx_arp,U64		id=if1_rx_arp,U64
     RX-icmp: ################### pkt    RX-icmp: ################# pkt    	id=if0_rx_icmp,U64		id=if1_rx_icmp,U64
