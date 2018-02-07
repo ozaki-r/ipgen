@@ -2353,13 +2353,13 @@ rfc2544_test(int unsigned n)
 
 	case RFC2544_MEASURING0:
 		if (rfc2544_work[rfc2544_nthtest].prevpps) {
-			sprintf(msgbuf, "measuring pktsize %u, pps %u -> %u (%+d) (%.4fMbps -> %.4fMbps)",
+			sprintf(msgbuf, "measuring pktsize %u, pps %u -> %u, %.4fMbps -> %.4fMbps (max %.4fMbps)",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].prevpps,
 			    rfc2544_work[rfc2544_nthtest].curpps,
-			    rfc2544_work[rfc2544_nthtest].curpps - rfc2544_work[rfc2544_nthtest].prevpps,
 			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].prevpps),
-			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
+			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps),
+			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].maxpps));
 		} else {
 			sprintf(msgbuf, "measuring pktsize %d, pps %d (%.2fMbps)",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
