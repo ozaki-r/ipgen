@@ -107,6 +107,8 @@ int pps_hz = DEFAULT_PPS_HZ;
 int opt_npkt_sync = 0x7fffffff;
 int opt_nflow = 0;
 
+bool use_curses = true;
+
 int use_ipv6 = 0;
 int verbose = 0;
 char *opt_debug = NULL;
@@ -1682,10 +1684,14 @@ quit(int fromsig)
 	do_quit = 1;
 	alarm(0);
 
-	itemlist_fini_term();
+	if (use_curses)
+		itemlist_fini_term();
+	else
+		printf("\n");
 
 	printf("Exiting...\n");
 	fflush(stdout);
+
 
 	interface_close(0);
 	interface_close(1);
@@ -1776,11 +1782,47 @@ usage(void)
 	       "					test only specified pktsize. (default: 46,110,494,1006,1262,1390,1500)\n"
 	       "	--rfc2544-output-json <file>	output rfc2544 results as json file format\n"
 	       "\n"
+	       "	--nocurses			no curses mode\n"
+	       "\n"
 	       "	-D <file>			debug. dump all generated packets to <file> as tcpdump file format\n"
 	);
 
 	exit(1);
 }
+
+
+static char *
+timestamp(time_t t)
+{
+	static char tstamp[128];
+	time_t mytime;
+	struct tm ltime;
+
+	mytime = t;
+	localtime_r(&mytime, &ltime);
+	strftime(tstamp, sizeof(tstamp), "%F %T", &ltime);
+
+	return tstamp;
+}
+
+static void
+logging(char const *fmt, ...)
+{
+	struct timespec realtime_now;
+	va_list ap;
+
+	clock_gettime(CLOCK_REALTIME, &realtime_now);
+
+	va_start(ap, fmt);
+	if (!use_curses) {
+		printf("%s ", timestamp(realtime_now.tv_sec));
+		vprintf(fmt, ap);
+	} else {
+		vsnprintf(msgbuf, sizeof(msgbuf), fmt, ap);
+	}
+	va_end(ap);
+}
+
 
 void *
 tx_thread_main(void *arg)
@@ -1872,16 +1914,23 @@ genscript_play(int unsigned n)
 
 			switch (genitem->cmd) {
 			case GENITEM_CMD_RESET:
+				logging("script: reset counters\n");
 				statistics_clear();
 				break;
 			case GENITEM_CMD_NOP:
 				break;
 
 			case GENITEM_CMD_TX0SET:
+				logging("script: %s: packet size = %lu, pps = %lu\n",
+				    interface[0].ifname,
+				    genitem->pktsize, genitem->pps);
 				setpktsize(0, genitem->pktsize);
 				setpps(0, genitem->pps);
 				break;
 			case GENITEM_CMD_TX1SET:
+				logging("script: %s: packet size = %lu, pps = %lu\n",
+				    interface[1].ifname,
+				    genitem->pktsize, genitem->pps);
 				setpktsize(1, genitem->pktsize);
 				setpps(1, genitem->pps);
 				break;
@@ -1921,10 +1970,10 @@ control_tty_handler(int fd, struct itemlist *itemlist)
 			/* you can exit from RFC2544 mode by '!' for debug */
 			if (c == '!') {
 				opt_rfc2544 = 0;
-				sprintf(msgbuf, "exiting rfc2544 mode");
+				logging("exiting rfc2544 mode");
 				return;
 			}
-			sprintf(msgbuf, "cannot control in rfc2544 mode");
+			logging("cannot control in rfc2544 mode");
 			return;
 		}
 	}
@@ -2280,7 +2329,7 @@ rfc2544_test(int unsigned n)
 
 	switch (state) {
 	case RFC2544_START:
-		sprintf(msgbuf, "start rfc2544 test mode. trial-duration is %d sec. warming up...",
+		logging("start rfc2544 test mode. trial-duration is %d sec. warming up...",
 		    opt_rfc2544_trial_duration);
 
 		/* disable transmit */
@@ -2353,7 +2402,7 @@ rfc2544_test(int unsigned n)
 
 	case RFC2544_MEASURING0:
 		if (rfc2544_work[rfc2544_nthtest].prevpps) {
-			sprintf(msgbuf, "measuring pktsize %u, pps %u -> %u, %.4fMbps -> %.4fMbps (max %.4fMbps)",
+			logging("measuring pktsize %u, pps %u -> %u, %.4fMbps -> %.4fMbps (max %.4fMbps)",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].prevpps,
 			    rfc2544_work[rfc2544_nthtest].curpps,
@@ -2361,7 +2410,7 @@ rfc2544_test(int unsigned n)
 			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps),
 			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].maxpps));
 		} else {
-			sprintf(msgbuf, "measuring pktsize %d, pps %d (%.2fMbps)",
+			logging("measuring pktsize %d, pps %d (%.2fMbps)",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].curpps,
 			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
@@ -2435,14 +2484,14 @@ rfc2544_test(int unsigned n)
 		}
 
 		if (measure_done) {
-			sprintf(msgbuf, "done. pktsize %d, maximum pps %d (%.2fMbps)",
+			logging("done. pktsize %d, maximum pps %d (%.2fMbps)",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].curpps,
 			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
 
 			rfc2544_nthtest++;
 			if (rfc2544_nthtest >= rfc2544_ntest) {
-				sprintf(msgbuf, "complete");
+				logging("complete");
 				state = RFC2544_DONE0;
 			} else {
 				state = RFC2544_RESETTING0;
@@ -2462,6 +2511,27 @@ rfc2544_test(int unsigned n)
 
 }
 
+static void
+nocurses_update(void)
+{
+#if 0
+	static struct std_output_info {
+		uint64_t drop, drop_flow;
+	} output_last[2];
+	int i, nupdate;
+
+	nupdate = 0;
+#define IF_UPDATE(a, b)	if (((a) != (b)) && (((a) = (b)), nupdate++, 1))
+	for (i = 0; i < 2; i++) {
+		IF_UPDATE(output_last[i].drop, interface[i].counter.rx_seqdrop)
+			logging(" %s.drop=%lu", interface[i].ifname, interface[i].counter.rx_seqdrop);
+		IF_UPDATE(output_last[i].drop_flow, interface[i].counter.rx_seqdrop_flow)
+			logging(" %s.drop-perflow=%lu", interface[i].ifname, interface[i].counter.rx_seqdrop_flow);
+	}
+	if (nupdate)
+		logging("\n");
+#endif
+}
 
 /*
  * control_interval() will be called DISPLAY_UPDATE_HZ
@@ -2501,19 +2571,21 @@ control_interval(struct itemlist *itemlist)
 		"   <<<   "
 	};
 
-	if (ntwiddle >= 12)
-		ntwiddle = 0;
+	if (itemlist != NULL) {
+		if (ntwiddle >= 12)
+			ntwiddle = 0;
 
-	if (interface[0].transmit_pps && interface[0].transmit_enable) {
-		strcpy(interface[0].twiddle, twiddle0[ntwiddle]);
-	} else {
-		interface[0].twiddle[0] = '\0';
-	}
+		if (interface[0].transmit_pps && interface[0].transmit_enable) {
+			strcpy(interface[0].twiddle, twiddle0[ntwiddle]);
+		} else {
+			interface[0].twiddle[0] = '\0';
+		}
 
-	if (interface[1].transmit_pps && interface[1].transmit_enable) {
-		strcpy(interface[1].twiddle, twiddle1[ntwiddle]);
-	} else {
-		interface[1].twiddle[0] = '\0';
+		if (interface[1].transmit_pps && interface[1].transmit_enable) {
+			strcpy(interface[1].twiddle, twiddle1[ntwiddle]);
+		} else {
+			interface[1].twiddle[0] = '\0';
+		}
 	}
 
 	if ((genscript != NULL) && (ninterval == 0)) {
@@ -2525,7 +2597,11 @@ control_interval(struct itemlist *itemlist)
 		rfc2544_test(ninterval);
 	}
 
-	itemlist_update(itemlist, 0);
+	if (use_curses) {
+		itemlist_update(itemlist, 0);
+	} else if (ninterval == 0) {
+		nocurses_update();
+	}
 
 #if 1
 	if (ninterval & 1)
@@ -2822,17 +2898,22 @@ control_thread_main(void *arg)
 	struct timeval tv = { 0, 1000000 / DISPLAY_UPDATE_HZ};
 	int s;
 
-	itemlist_init_term();
-	itemlist = itemlist_new(pktgen_template, pktgen_items, ITEMLIST_ID_NITEMS);
-	control_init_items(itemlist);
+	if (use_curses) {
+		itemlist_init_term();
+		itemlist = itemlist_new(pktgen_template, pktgen_items, ITEMLIST_ID_NITEMS);
+		control_init_items(itemlist);
+	}
 
 	webserv_init();
 
 	/* for libevent */
 	s = listentcp(INADDR_ANY, 8080);
 	event_init();
-	event_set(&ev_tty, STDIN_FILENO, EV_READ | EV_PERSIST, evt_readable_stdin_callback, itemlist);
-	event_add(&ev_tty, NULL);
+
+	if (use_curses) {
+		event_set(&ev_tty, STDIN_FILENO, EV_READ | EV_PERSIST, evt_readable_stdin_callback, itemlist);
+		event_add(&ev_tty, NULL);
+	}
 	event_set(&ev_timer, -1, EV_PERSIST, evt_timeout_callback, itemlist);
 	event_add(&ev_timer, &tv);
 	event_set(&ev_sock, s, EV_READ | EV_PERSIST, evt_accept_callback, &ev_sock);
@@ -2925,7 +3006,8 @@ static struct option longopts[] = {
 	{	"rfc2544-slowstart",		no_argument,		0,	0	},
 	{	"rfc2544-trial-duration",	required_argument,	0,	0	},
 	{	"rfc2544-pktsize",		required_argument,	0,	0	},
-	{	"rfc2544-output-json",	required_argument,	0,	0	},
+	{	"rfc2544-output-json",		required_argument,	0,	0	},
+	{	"nocurses",			no_argument,		0,	0	},
 	{	NULL,				0,			NULL,	0	}
 };
 
@@ -3204,6 +3286,8 @@ main(int argc, char *argv[])
 				opt_rfc2544_pktsize = optarg;
 			} else if (strcmp(longopts[optidx].name, "rfc2544-output-json") == 0) {
 				opt_rfc2544_output_json = optarg;
+			} else if (strcmp(longopts[optidx].name, "nocurses") == 0) {
+				use_curses = false;
 			} else {
 				usage();
 			}
