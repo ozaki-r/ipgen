@@ -1818,6 +1818,7 @@ logging(char const *fmt, ...)
 	if (!use_curses) {
 		printf("%s ", timestamp(realtime_now.tv_sec));
 		vprintf(fmt, ap);
+		printf("\n");
 	} else {
 		vsnprintf(msgbuf, sizeof(msgbuf), fmt, ap);
 	}
@@ -1915,21 +1916,21 @@ genscript_play(int unsigned n)
 
 			switch (genitem->cmd) {
 			case GENITEM_CMD_RESET:
-				logging("script: reset counters\n");
+				logging("script: reset counters");
 				statistics_clear();
 				break;
 			case GENITEM_CMD_NOP:
 				break;
 
 			case GENITEM_CMD_TX0SET:
-				logging("script: %s: packet size = %lu, pps = %lu\n",
+				logging("script: %s: packet size = %lu, pps = %lu",
 				    interface[0].ifname,
 				    genitem->pktsize, genitem->pps);
 				setpktsize(0, genitem->pktsize);
 				setpps(0, genitem->pps);
 				break;
 			case GENITEM_CMD_TX1SET:
-				logging("script: %s: packet size = %lu, pps = %lu\n",
+				logging("script: %s: packet size = %lu, pps = %lu",
 				    interface[1].ifname,
 				    genitem->pktsize, genitem->pps);
 				setpktsize(1, genitem->pktsize);
@@ -2519,18 +2520,15 @@ nocurses_update(void)
 	static struct std_output_info {
 		uint64_t drop, drop_flow;
 	} output_last[2];
-	int i, nupdate;
+	int i;
 
-	nupdate = 0;
 #define IF_UPDATE(a, b)	if (((a) != (b)) && (((a) = (b)), nupdate++, 1))
 	for (i = 0; i < 2; i++) {
 		IF_UPDATE(output_last[i].drop, interface[i].counter.rx_seqdrop)
-			logging(" %s.drop=%lu", interface[i].ifname, interface[i].counter.rx_seqdrop);
+			logging("%s.drop=%lu", interface[i].ifname, interface[i].counter.rx_seqdrop);
 		IF_UPDATE(output_last[i].drop_flow, interface[i].counter.rx_seqdrop_flow)
-			logging(" %s.drop-perflow=%lu", interface[i].ifname, interface[i].counter.rx_seqdrop_flow);
+			logging("%s.drop-perflow=%lu", interface[i].ifname, interface[i].counter.rx_seqdrop_flow);
 	}
-	if (nupdate)
-		logging("\n");
 #endif
 }
 
