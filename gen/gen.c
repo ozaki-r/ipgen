@@ -692,7 +692,8 @@ ipg_enable(int enable)
 	}
 
 	if (enable) {
-		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BURST, NULL);
+		if (itemlist != NULL)
+			itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BURST, NULL);
 		opt_ipg = 1;
 		calc_ipg(0);
 		calc_ipg(1);
@@ -3430,7 +3431,7 @@ main(int argc, char *argv[])
 	}
 
 	/* check console size */
-	{
+	if (use_curses) {
 		struct winsize winsize;
 		if (ioctl(STDIN_FILENO, TIOCGWINSZ, &winsize) != 0) {
 			fprintf(stderr, "cannot get terminal size\n");
@@ -3891,21 +3892,26 @@ main(int argc, char *argv[])
 
 	clock_gettime(CLOCK_MONOTONIC, &currenttime_main);
 
+	/*
+	 * setup signals
+	 */
 	(void)sigemptyset(&used_sigset);
-	(void)sigaddset(&used_sigset, SIGALRM);
+
 	(void)sigaddset(&used_sigset, SIGHUP);
 	(void)sigaddset(&used_sigset, SIGINT);
 	(void)sigaddset(&used_sigset, SIGQUIT);
-	(void)sigaddset(&used_sigset, SIGTSTP);
-	(void)sigaddset(&used_sigset, SIGCONT);
-
 	signal(SIGHUP, sighandler_int);
 	signal(SIGINT, sighandler_int);
 	signal(SIGQUIT, sighandler_int);
-	signal(SIGTSTP, sighandler_tstp);
-	signal(SIGCONT, sighandler_cont);
 
-	/* setup signals */
+	if (use_curses) {
+		(void)sigaddset(&used_sigset, SIGTSTP);
+		(void)sigaddset(&used_sigset, SIGCONT);
+		signal(SIGTSTP, sighandler_tstp);
+		signal(SIGCONT, sighandler_cont);
+	}
+
+	(void)sigaddset(&used_sigset, SIGALRM);
 	signal(SIGALRM, sighandler_alrm);
 	{
 		struct itimerval itv;
