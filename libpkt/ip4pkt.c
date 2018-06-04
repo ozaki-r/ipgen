@@ -38,16 +38,17 @@
 #include <net/if_arp.h>
 
 int
-ip4pkt_arpparse(char *buf, int *op, struct ether_addr *sha, in_addr_t *spa)
+ip4pkt_arpparse(char *buf, int *op, struct ether_addr *sha, in_addr_t *spa, in_addr_t *tpa)
 {
 	struct arppkt *arp;
 
 	arp = (struct arppkt *)buf;
 
-	/* build arp query packet */
+	/* extract arp packet */
 	*op = ntohs(arp->arp.ar_op);
 	memcpy(sha, arp->arp.ar_sha, ETHER_ADDR_LEN);
 	*spa = arp->arp.ar_spa.s_addr;
+	*tpa = arp->arp.ar_tpa.s_addr;
 
 	return 0;
 }

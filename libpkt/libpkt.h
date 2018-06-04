@@ -107,7 +107,7 @@ int ethpkt_src(char *, u_char *);
 int ethpkt_dst(char *, u_char *);
 
 /* ip4pkt.c */
-int ip4pkt_arpparse(char *, int *, struct ether_addr *, in_addr_t *);
+int ip4pkt_arpparse(char *, int *, struct ether_addr *, in_addr_t *, in_addr_t *);
 int ip4pkt_arpquery(char *, const struct ether_addr *, in_addr_t, in_addr_t);
 int ip4pkt_arpreply(char *, const char *, u_char *, in_addr_t, in_addr_t);
 int ip4pkt_icmp_template(char *, unsigned int);
@@ -143,7 +143,7 @@ char *ip4pkt_getptr(char *, unsigned int);
 int ip4pkt_test_cksum(char *, unsigned int);
 
 /* ip6pkt.c */
-int ip6pkt_neighbor_parse(char *, int *, struct ether_addr *, struct in6_addr *);
+int ip6pkt_neighbor_parse(char *, int *, struct ether_addr *, struct in6_addr *, struct in6_addr *);
 int ip6pkt_neighbor_solicit(char *, const struct ether_addr *, struct in6_addr *, struct in6_addr *);
 int ip6pkt_neighbor_solicit_reply(char *, const char *, u_char *, struct in6_addr *);
 int ip6pkt_icmp6_template(char *, unsigned int);

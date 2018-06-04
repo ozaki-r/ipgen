@@ -108,7 +108,7 @@ ip6pkt_neighbor_solicit(char *buf, const struct ether_addr *sha, struct in6_addr
 }
 
 int
-ip6pkt_neighbor_parse(char *buf, int *type, struct ether_addr *ha, struct in6_addr *tgt)
+ip6pkt_neighbor_parse(char *buf, int *type, struct ether_addr *ha, struct in6_addr *src, struct in6_addr *tgt)
 {
 	struct ether_header *eh;
 	struct ip6_hdr *ip6;
@@ -122,6 +122,7 @@ ip6pkt_neighbor_parse(char *buf, int *type, struct ether_addr *ha, struct in6_ad
 
 	*type = icmp6->icmp6_type;
 	memcpy(ha, eh->ether_shost, ETHER_ADDR_LEN);
+	memcpy(src, &ip6->ip6_src, sizeof(struct in6_addr));
 
 	switch (icmp6->icmp6_type) {
 	case ND_NEIGHBOR_SOLICIT:

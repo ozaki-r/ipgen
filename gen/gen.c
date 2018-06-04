@@ -1097,17 +1097,30 @@ arp_handler(int ifno, char *pkt)
 {
 	int pktlen;
 	struct ether_addr eaddr;
-	struct in_addr ipaddr;
+	struct in_addr spa, tpa;
 	int op;
 
-	ip4pkt_arpparse(pkt, &op, &eaddr, &ipaddr.s_addr);
+	ip4pkt_arpparse(pkt, &op, &eaddr, &spa.s_addr, &tpa.s_addr);
 	if (op == ARPOP_REPLY) {
-		/* ignore arp reply for PacketGenerating */
+		/* ignore arp reply */
+		return;
 	}
 
 	/* must to reply arp-query */
 	if (op == ARPOP_REQUEST) {
 		struct pbuf *p;
+
+		switch (interface[ifno].af_gwaddr) {
+		case AF_INET:
+			/* don't answer gateway address */
+			if (tpa.s_addr == interface[ifno].gwaddr.s_addr) {
+				DEBUGLOG("arp_handler: dont answer\n");
+				return;
+			}
+		case AF_INET6:
+		default:
+			break;
+		}
 
 		p = pbuf_alloc(ETHER_MAX_LEN);
 		if (p == NULL) {
@@ -1133,14 +1146,24 @@ ndp_handler(int ifno, char *pkt)
 {
 	int pktlen;
 	struct ether_addr eaddr;
-	struct in6_addr ip6addr;
+	struct in6_addr src, target;
 	int type;
 
-	ip6pkt_neighbor_parse(pkt, &type, &eaddr, &ip6addr);
+	ip6pkt_neighbor_parse(pkt, &type, &eaddr, &src, &target);
 
 	/* must to reply neighbor-advertize */
 	if (type == ND_NEIGHBOR_SOLICIT) {
 		struct pbuf *p;
+
+		switch (interface[ifno].af_gwaddr) {
+		case AF_INET6:
+			/* don't answer gateway address */
+			if (IN6_ARE_ADDR_EQUAL(&target, &interface[ifno].gw6addr))
+				return;
+		case AF_INET:
+		default:
+			break;
+		}
 
 		p = pbuf_alloc(ETHER_MAX_LEN);
 		if (p == NULL) {
