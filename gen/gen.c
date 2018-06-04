@@ -1113,10 +1113,10 @@ arp_handler(int ifno, char *pkt)
 		switch (interface[ifno].af_gwaddr) {
 		case AF_INET:
 			/* don't answer gateway address */
-			if (tpa.s_addr == interface[ifno].gwaddr.s_addr) {
-				DEBUGLOG("arp_handler: dont answer\n");
+			if (tpa.s_addr == interface[ifno].gwaddr.s_addr)
 				return;
-			}
+			break;
+
 		case AF_INET6:
 		default:
 			break;
@@ -1160,6 +1160,8 @@ ndp_handler(int ifno, char *pkt)
 			/* don't answer gateway address */
 			if (IN6_ARE_ADDR_EQUAL(&target, &interface[ifno].gw6addr))
 				return;
+			break;
+
 		case AF_INET:
 		default:
 			break;
