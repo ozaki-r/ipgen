@@ -2391,14 +2391,7 @@ rfc2544_test(int unsigned n)
 			rfc2544_work[rfc2544_nthtest].maxup = rfc2544_work[rfc2544_nthtest].maxpps / 2;
 
 		rfc2544_work[rfc2544_nthtest].prevpps = 0;
-
-		if (rfc2544_nthtest == 0) {
-			rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].maxup;
-		} else if (rfc2544_work[rfc2544_nthtest].maxpps < rfc2544_work[rfc2544_nthtest - 1].curpps) {
-			rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].maxpps;
-		} else {
-			rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest - 1].curpps;
-		}
+		rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].maxup;
 
 		memcpy(&statetime, &currenttime_main, sizeof(struct timeval));
 		statetime.tv_sec += 2;	/* wait 2sec */
