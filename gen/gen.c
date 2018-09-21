@@ -34,7 +34,9 @@
 #include <err.h>
 #include <string.h>
 #include <signal.h>
+#include <sys/sysctl.h>
 #include <sys/time.h>
+#include <sys/types.h>
 #include <net/if.h>
 #include <net/netmap.h>
 #define NETMAP_WITH_LIBS
@@ -42,6 +44,7 @@
 #include <net/netmap_user.h>
 #include <machine/atomic.h>
 #include <net/ethernet.h>
+#include <net/if_mib.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
@@ -818,6 +821,39 @@ interface_up(const char *ifname)
 	char buf[256];
 	snprintf(buf, sizeof(buf), "ifconfig %s up", ifname);
 	system(buf);
+}
+
+uint64_t
+interface_get_baudrate(const char *ifname)
+{
+	unsigned int ifindex;
+	struct ifmibdata ifmd;
+	int name[6];
+	size_t len;
+	int rv;
+
+	ifindex = if_nametoindex(ifname);
+
+	if (ifindex == 0) {
+		fprintf(stderr, "Failed to get ifindex\n");
+		exit(1);
+	}
+
+	name[0] = CTL_NET;
+	name[1] = PF_LINK;
+	name[2] = NETLINK_GENERIC;
+	name[3] = IFMIB_IFDATA;
+	name[4] = ifindex;
+	name[5] = IFDATA_GENERAL;
+	len = sizeof(ifmd);
+
+	rv = sysctl(name, 6, &ifmd, &len, 0, 0);
+	if (rv < 0) {
+		warn("Failed to get ifdata\n");
+		return 0;
+	}
+
+	return ifmd.ifmd_data.ifi_baudrate;
 }
 
 void
@@ -3055,7 +3091,6 @@ main(int argc, char *argv[])
 
 	/* initialize instances */
 	pps = -1;
-	maxlinkspeed = 0;
 	for (i = 0; i < 2; i++) {
 		memset(&interface[i], 0, sizeof(interface));
 		interface_init(i);
@@ -3371,6 +3406,16 @@ main(int argc, char *argv[])
 		usage();
 	}
 
+	if (!opt_txonly)
+		interface_up(ifname[0]);	/* RX */
+	if (!opt_rxonly)
+		interface_up(ifname[1]);	/* TX */
+
+	if (!opt_rxonly)
+		interface_wait_linkup(ifname[1]);	/* TX */
+	if (!opt_txonly)
+		interface_wait_linkup(ifname[0]);	/* RX */
+
 	for (i = 0; i < 2; i++) {
 		if (opt_txonly && i == 0)
 			continue;
@@ -3382,6 +3427,28 @@ main(int argc, char *argv[])
 
 		/* Set maxlinkspeed */
 		for (j = 0; j < sizeof(ifflags)/sizeof(ifflags[0]); j++) {
+			uint64_t linkspeed = interface_get_baudrate(ifname[i]);
+
+			if (linkspeed > 0) {
+				interface[i].maxlinkspeed = linkspeed;
+				fprintf(stderr, "%s: linkspeed = %lu\n", ifname[i], linkspeed);
+				break;
+			}
+
+			if (linkspeed < IF_Mbps(10)) {
+				/*
+				 * If the baudrate is lower than 10Mbps,
+				 * something is wrong.
+				 */
+				fprintf(stderr,
+				    "%s: WARINIG: baudrate(%lu) < IF_Mbps(10)\n", ifname[i],
+				    linkspeed);
+			}
+
+			/*
+			 * If we failed to get the link speed from sysctl,
+			 * get the default link speed from ifflags[] table.
+			 */
 			if (strncmp(ifname[i], ifflags[j].drvname,
 			    strnlen(ifflags[j].drvname, IFNAMSIZ)) == 0) {
 				interface[i].maxlinkspeed = ifflags[j].maxlinkspeed;
@@ -3407,6 +3474,8 @@ main(int argc, char *argv[])
 			else
 				pps = 14880952;
 	}
+
+	maxlinkspeed = 0;
 	for (i = 0; i < 2; i++) {
 		if (maxlinkspeed < interface[i].maxlinkspeed)
 			maxlinkspeed = interface[i].maxlinkspeed;
@@ -3466,11 +3535,6 @@ main(int argc, char *argv[])
 	for (i = 0; i < 2; i++) {
 		interface[i].transmit_txhz = interface[i].transmit_pps / pps_hz;
 	}
-
-	if (!opt_txonly)
-		interface_up(ifname[0]);	/* RX */
-	if (!opt_rxonly)
-		interface_up(ifname[1]);	/* TX */
 
 	if (!opt_txonly)
 		interface_setup(0, ifname[0]);	/* RX */
