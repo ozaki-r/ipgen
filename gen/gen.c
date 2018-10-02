@@ -72,18 +72,12 @@
 #define	LINKSPEED_10GBPS	10000000000ULL
 
 #define	DEFAULT_IFG		12	/* Inter Packet Gap */
-#define	DEFAULT_PREAMBLE	(7 + 1)	/* preamble + SDF */
+#define	DEFAULT_PREAMBLE	(7 + 1)	/* preamble + SFD */
 #define	FCS			4
 #define	ETHHDRSIZE		sizeof(struct ether_header)
-#define	PKTSIZE2FRAMESIZE(x)	((x) + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS)
-#define	CALC_BPS(pktsize, pps)	\
-	((PKTSIZE2FRAMESIZE((pktsize) + ETHHDRSIZE) * (pps)) * 8.0)
-#define	CALC_MBPS(pktsize, pps)	\
-	(CALC_BPS(pktsize, pps) / 1000 / 1000)
 
 #define	PORT_DEFAULT		9	/* discard port */
 #define MAXFLOWNUM		(1024 * 1024)
-
 
 #undef DEBUG
 #ifdef DEBUG
@@ -124,6 +118,7 @@ int opt_gentest = 0;
 int opt_addrrange = 0;
 int opt_saddr = 0;
 int opt_daddr = 0;
+int opt_bps_include_preamble = 0;
 int opt_allnet = 0;
 int opt_fragment = 0;
 int opt_tcp = 0;
@@ -179,6 +174,30 @@ pthread_t rxthread1;
 pthread_t controlthread;
 
 const uint8_t eth_zero[6] = { 0, 0, 0, 0, 0, 0 };
+
+#define	PKTSIZE2FRAMESIZE(x)	((x) + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS)
+#define	_CALC_BPS(pktsize, pps)	\
+	((PKTSIZE2FRAMESIZE((pktsize) + ETHHDRSIZE) * (pps)) * 8.0)
+#define	_CALC_MBPS(pktsize, pps)	\
+	(_CALC_BPS(pktsize, pps) / 1000.0 / 1000.0)
+
+static inline double
+calc_bps(unsigned int pktsize, unsigned long pps)
+{
+	if (opt_bps_include_preamble)
+		return _CALC_BPS(pktsize, pps);
+
+	/* don't include ifg/preamble/fcs */
+	return (pktsize + ETHHDRSIZE + FCS) * pps * 8.0;
+}
+
+static inline double
+calc_mbps(unsigned int pktsize, unsigned long pps)
+{
+	if (opt_bps_include_preamble)
+		return _CALC_MBPS(pktsize, pps);
+	return calc_bps(pktsize, pps) / 1000.0 / 1000.0;
+}
 
 /* sizeof(struct seqdata) = 6 bytes */
 struct seqdata {
@@ -736,10 +755,9 @@ update_transmit_Mbps(int ifno)
 		interface[ifno].pktsize  = 1500;
 
 	if (interface[ifno].transmit_enable) {
-		interface[ifno].transmit_Mbps =
-		    (unsigned long long)interface[ifno].transmit_pps *
-		    PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE) *
-		    8.0 / 1000 / 1000;
+		interface[ifno].transmit_Mbps = calc_mbps(
+		    interface[ifno].pktsize,
+		    (unsigned long long)interface[ifno].transmit_pps);
 	} else {
 		interface[ifno].transmit_Mbps = 0.0;
 	}
@@ -1254,7 +1272,10 @@ interface_receive(int ifno)
 			len = rxring->slot[cur].len;
 
 			interface[ifno].counter.rx++;
-			interface[ifno].counter.rx_byte += PKTSIZE2FRAMESIZE(len);
+			if (opt_bps_include_preamble)
+				interface[ifno].counter.rx_byte += len + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS;
+			else
+				interface[ifno].counter.rx_byte += len + FCS;
 
 			/* ignore FLOWCONTROL */
 			eth = (struct ether_header *)buf;
@@ -1480,7 +1501,10 @@ interface_transmit(int ifno)
 
 			txring->slot[cur].flags = 0;
 
-			interface[ifno].counter.tx_byte += PKTSIZE2FRAMESIZE(txring->slot[cur].len);
+			if (opt_bps_include_preamble)
+				interface[ifno].counter.tx_byte += txring->slot[cur].len + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS;
+			else
+				interface[ifno].counter.tx_byte += txring->slot[cur].len + FCS;
 			interface[ifno].counter.tx++;
 		}
 		txring->head = txring->cur = cur;
@@ -1687,8 +1711,24 @@ sighandler_alrm(int signo)
 				interface[i].counter.rx_byte_delta = interface[i].counter.rx_byte - interface[i].counter.rx_byte_last;
 				interface[i].counter.rx_byte_last = interface[i].counter.rx_byte;
 
-				interface[i].counter.tx_Mbps = interface[i].counter.tx_byte_delta * 8.0 / 1000 / 1000;
-				interface[i].counter.rx_Mbps = interface[i].counter.rx_byte_delta * 8.0 / 1000 / 1000;
+#if 0
+				if (opt_bps_include_preamble) {
+					interface[i].counter.tx_Mbps =
+					    (interface[i].counter.tx_byte_delta +
+					     (interface[i].counter.tx_delta * (DEFAULT_IFG + DEFAULT_PREAMBLE + FCS))) *
+					    8.0 / 1000 / 1000;
+					interface[i].counter.rx_Mbps =
+					    (interface[i].counter.rx_byte_delta +
+					     (interface[i].counter.rx_delta * (DEFAULT_IFG + DEFAULT_PREAMBLE + FCS))) *
+					    8.0 / 1000 / 1000;
+				} else {
+					interface[i].counter.tx_Mbps = (interface[i].counter.tx_byte_delta + FCS) * 8.0 / 1000 / 1000;
+					interface[i].counter.rx_Mbps = (interface[i].counter.rx_byte_delta + FCS) * 8.0 / 1000 / 1000;
+				}
+#else
+				interface[i].counter.tx_Mbps = (interface[i].counter.tx_byte_delta) * 8.0 / 1000 / 1000;
+				interface[i].counter.rx_Mbps = (interface[i].counter.rx_byte_delta) * 8.0 / 1000 / 1000;
+#endif
 
 
 				interface[i].counter.rx_seqdrop_delta = interface[i].counter.rx_seqdrop - interface[i].counter.rx_seqdrop_last;
@@ -1823,6 +1863,9 @@ usage(void)
 	       "	--tcp				generate TCP packet\n"
 	       "	--udp				generate UDP packet (default)\n"
 	       "	--fragment			generate fragment packet\n"
+	       "\n"
+	       "	--l1-bps			include IFG/PREAMBLE/FCS for bps calculation\n"
+	       "	--l2-bps			don't include IFG/PREAMBLE for bps calculation (default)\n"
 	       "\n"
 	       "	--allnet			use destination address incrementally\n"
 	       "	--saddr <begin>[-<end>]		use source address range (default: TX interface address)\n"
@@ -2206,7 +2249,7 @@ rfc2544_showresult(void)
 	 /* check link speed. 1G or 10G? */
 	tmp = 0 ;
 	for (i = 0; i < rfc2544_ntest; i++) {
-		mbps = CALC_MBPS(rfc2544_work[i].pktsize, rfc2544_work[i].curpps);
+		mbps = calc_mbps(rfc2544_work[i].pktsize, rfc2544_work[i].curpps);
 		if (tmp < mbps)
 			tmp = mbps;
 	}
@@ -2231,7 +2274,7 @@ rfc2544_showresult(void)
 	for (i = 0; i < rfc2544_ntest; i++) {
 		printf("%8u |", rfc2544_work[i].pktsize + 18);
 
-		mbps = CALC_MBPS(rfc2544_work[i].pktsize, rfc2544_work[i].curpps);
+		mbps = calc_mbps(rfc2544_work[i].pktsize, rfc2544_work[i].curpps);
 		for (j = 0; j < mbps / 20 / linkspeed; j++)
 			printf("#");
 		for (; j < 51; j++)
@@ -2332,7 +2375,7 @@ rfc2544_showresult_json(char *filename)
 			fprintf(fp, ",");
 		fprintf(fp, "\"%u\":", rfc2544_work[i].pktsize + 18);
 		fprintf(fp, "{");
-		bps = CALC_BPS(rfc2544_work[i].pktsize, rfc2544_work[i].curpps);
+		bps = calc_bps(rfc2544_work[i].pktsize, rfc2544_work[i].curpps);
 		fprintf(fp, "\"bps\":\"%f\",", bps);
 		fprintf(fp, "\"curpps\":\"%u\",", rfc2544_work[i].curpps);
 		fprintf(fp, "\"limitpps\":\"%u\"", rfc2544_work[i].limitpps);
@@ -2461,14 +2504,14 @@ rfc2544_test(int unsigned n)
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].prevpps,
 			    rfc2544_work[rfc2544_nthtest].curpps,
-			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].prevpps),
-			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps),
-			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].maxpps));
+			    calc_mbps(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].prevpps),
+			    calc_mbps(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps),
+			    calc_mbps(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].maxpps));
 		} else {
 			logging("measuring pktsize %d, pps %d (%.2fMbps)",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].curpps,
-			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
+			    calc_mbps(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
 		}
 
 		memcpy(&statetime, &currenttime_main, sizeof(struct timeval));
@@ -2487,7 +2530,7 @@ rfc2544_test(int unsigned n)
 			DEBUGLOG("RFC2544: pktsize=%d, pps=%d (%.2fMbps), rx=%llu, drop=%llu, drop-rate=%.3f\n",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].curpps,
-			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps),
+			    calc_mbps(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps),
 			    (unsigned long long)interface[0].counter.rx,
 			    (unsigned long long)interface[0].counter.rx_seqdrop,
 			    interface[0].counter.rx_seqdrop * 100.0 / interface[0].counter.rx);
@@ -2542,7 +2585,7 @@ rfc2544_test(int unsigned n)
 			logging("done. pktsize %d, maximum pps %d (%.2fMbps)",
 			    rfc2544_work[rfc2544_nthtest].pktsize,
 			    rfc2544_work[rfc2544_nthtest].curpps,
-			    CALC_MBPS(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
+			    calc_mbps(rfc2544_work[rfc2544_nthtest].pktsize, rfc2544_work[rfc2544_nthtest].curpps));
 
 			rfc2544_nthtest++;
 			if (rfc2544_nthtest >= rfc2544_ntest) {
@@ -2685,6 +2728,29 @@ itemlist_callback_burst_steady(struct itemlist *itemlist, struct item *item, voi
 		ipg_enable(1);
 		break;
 	}
+
+	return 0;
+}
+
+static int
+itemlist_callback_l1_l2(struct itemlist *itemlist, struct item *item, void *refptr)
+{
+	switch (item->id) {
+	case ITEMLIST_ID_BUTTON_BPS_L1:
+		opt_bps_include_preamble = 1;
+		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L1, "*");
+		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L2, NULL);
+		break;
+
+	case ITEMLIST_ID_BUTTON_BPS_L2:
+		opt_bps_include_preamble = 0;
+		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L1, NULL);
+		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L2, "*");
+		break;
+	}
+
+	update_transmit_Mbps(0);
+	update_transmit_Mbps(1);
 
 	return 0;
 }
@@ -2848,6 +2914,8 @@ control_init_items(struct itemlist *itemlist)
 
 	itemlist_register_item(itemlist, ITEMLIST_ID_PPS_HZ, NULL, &pps_hz);
 	itemlist_register_item(itemlist, ITEMLIST_ID_OPT_NFLOW, itemlist_callback_nflow, &opt_nflow);
+	itemlist_register_item(itemlist, ITEMLIST_ID_BUTTON_BPS_L1, itemlist_callback_l1_l2, NULL);
+	itemlist_register_item(itemlist, ITEMLIST_ID_BUTTON_BPS_L2, itemlist_callback_l1_l2, NULL);
 	itemlist_register_item(itemlist, ITEMLIST_ID_BUTTON_BURST, itemlist_callback_burst_steady, NULL);
 	itemlist_register_item(itemlist, ITEMLIST_ID_BUTTON_STEADY, itemlist_callback_burst_steady, NULL);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_PKTSIZE, itemlist_callback_pktsize, &interface[0].pktsize);
@@ -2871,6 +2939,11 @@ control_init_items(struct itemlist *itemlist)
 		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_STEADY, "*");
 	else
 		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BURST, "*");
+
+	if (opt_bps_include_preamble)
+		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L1, "*");
+	else
+		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L2, "*");
 
 #ifdef IPG_HACK
 	if (support_ipg == 0) {
@@ -3026,12 +3099,12 @@ gentest_main(void)
 			printf("%llu pkt generated.",
 			    (unsigned long long)npkt - lpkt);
 
-			printf(" totally %llu packet generated in %lu second. average: %llu pps, pktsize %d, %lluMbps\n",
+			printf(" totally %llu packet generated in %lu second. average: %llu pps, pktsize %d, %.2fMbps\n",
 			    (unsigned long long)npkt,
 			    (unsigned long)nsec,
 			    (unsigned long long)npkt / nsec,
 			    interface[0].pktsize,
-			    PKTSIZE2FRAMESIZE(interface[0].pktsize + ETHHDRSIZE) * 8ULL * ((unsigned long long)npkt / nsec) / 1000 / 1000);
+			    calc_mbps(interface[0].pktsize, npkt / nsec));
 			fflush(stdout);
 
 			lpkt = npkt;
@@ -3042,6 +3115,8 @@ gentest_main(void)
 static struct option longopts[] = {
 	{	"ipg",				no_argument,		0,	0	},
 	{	"burst",			no_argument,		0,	0	},
+	{	"l1-bps",			no_argument,		0,	0,	},
+	{	"l2-bps",			no_argument,		0,	0,	},
 	{	"allnet",			no_argument,		0,	0	},
 	{	"fragment",			no_argument,		0,	0	},
 	{	"tcp",				no_argument,		0,	0	},
@@ -3274,6 +3349,10 @@ main(int argc, char *argv[])
 				opt_ipg = 1;
 			} else if (strcmp(longopts[optidx].name, "burst") == 0) {
 				opt_ipg = 0;
+			} else if (strcmp(longopts[optidx].name, "l1-bps") == 0) {
+				opt_bps_include_preamble = 1;
+			} else if (strcmp(longopts[optidx].name, "l2-bps") == 0) {
+				opt_bps_include_preamble = 0;
 			} else if (strcmp(longopts[optidx].name, "allnet") == 0) {
 				opt_allnet = 1;
 			} else if (strcmp(longopts[optidx].name, "fragment") == 0) {
@@ -3832,10 +3911,13 @@ main(int argc, char *argv[])
 	    ifname[1],
 	    opt_fulldup ? "<->" : "->",
 	    ifname[0]);
-	printf("IP pktsize %d, %u pps, %lu Mbps (%lu bps)\n", interface[0].pktsize, interface[0].transmit_pps,
-	    (unsigned long)PKTSIZE2FRAMESIZE(interface[0].pktsize + ETHHDRSIZE) * 8 * interface[0].transmit_pps / 1000 / 1000,
-	    (unsigned long)PKTSIZE2FRAMESIZE(interface[0].pktsize + ETHHDRSIZE) * 8 * interface[0].transmit_pps);
 
+
+printf("opt_bps_include_preamble=%d\n", opt_bps_include_preamble);
+
+	printf("IP pktsize %d, %u pps, %.1f Mbps (%lu bps)\n", interface[0].pktsize, interface[0].transmit_pps,
+	    calc_mbps(interface[0].pktsize, interface[0].transmit_pps),
+	    (unsigned long)calc_bps(interface[0].pktsize, interface[0].transmit_pps));
 
 	/*
 	 * open netmap devices

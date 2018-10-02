@@ -17,8 +17,7 @@
     RX-other: ################## pkt    RX-other: ################ pkt    	id=if0_rx_other,U64		id=if1_rx_other,U64
     RX-expired: ################ pkt    RX-expired: ############## pkt    	id=if0_rx_expire,U64		id=if1_rx_expire,U64
                                                                           
-  Delta:                                                                  
-                 TX: ########### pps               TX: ########### pps    	id=if0_tx_delta,U64		id=if1_tx_delta,U64
+  Delta:         TX: ########### pps               TX: ########### pps    	id=if0_tx_delta,U64		id=if1_tx_delta,U64
                  TX: ########### bytes/s           TX: ########### bytes/s	id=if0_tx_byte_delta,U64	id=if1_tx_byte_delta,U64
                  TX: ########### Mbps              TX: ########### Mbps   	id=if0_tx_Mbps,DBL		id=if1_tx_Mbps,DBL
                  RX: ########### pps               RX: ########### pps    	id=if0_rx_delta,U64		id=if1_rx_delta,U64
@@ -29,8 +28,8 @@
                 max: ########### ms               max: ########### ms     	id=if0_latency_max,DBL		id=if1_latency_max,DBL
                 avg: ########### ms               avg: ########### ms     	id=if0_latency_avg,DBL		id=if1_latency_avg,DBL
                                                                           
-  Control:                                                                
-        Hz: ######   Flow:[#######]      Traffic: Burst[#]/Steady[#]      	id=pps_hz,LEFT,U32		id=opt_nflow,LEFT,U32,EDIT	id=button_burst,BUTTON	id=button_steady,BUTTON
+  Control:      Hz: ######          bps: L1[#]/L2[#]                      	id=pps_hz,LEFT,U32		id=button_bps_l1,BUTTON	id=button_bps_l2,BUTTON
+              Flow:[#######]    Traffic: Burst[#]/Steady[#]               	id=opt_nflow,LEFT,U32,EDIT	id=button_burst,BUTTON	id=button_steady,BUTTON
   TX-control:                                                             
         TX-pktsize:[##########]           TX-pktsize:[##########]         	id=if0_pktsize,LEFT,U32,EDIT	id=if1_pktsize,LEFT,U32,EDIT
         TX-pps:    [##########]           TX-pps:    [##########]         	id=if0_pps,LEFT,U32,EDIT	id=if1_pps,LEFT,U32,EDIT
