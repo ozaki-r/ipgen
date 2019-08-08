@@ -37,10 +37,10 @@
 
 #include "libaddrlist.h"
 
-static unsigned int
-gcd(unsigned int a, unsigned int b)
+static uint64_t
+gcd(uint64_t a, uint64_t b)
 {
-	unsigned int t;
+	uint64_t t;
 	while ((a % b) != 0) {
 		t = b;
 		b = a % b;
@@ -50,7 +50,7 @@ gcd(unsigned int a, unsigned int b)
 }
 
 static unsigned int
-lcm(unsigned int a, unsigned int b)
+lcm(uint64_t a, uint64_t b)
 {
 	return a * b / gcd(a, b);
 }
@@ -232,9 +232,9 @@ addresslist_append(struct addresslist *adrlist, uint8_t proto,
 	struct address_tuple *newtuple;
 	struct in_addr saddr, daddr;
 	uint16_t sport, dport;
-	unsigned int saddr_num, daddr_num, sport_num, dport_num;
-	unsigned int addr_num, port_num;
-	unsigned int tuple_num, n;
+	uint64_t saddr_num, daddr_num, sport_num, dport_num;
+	uint64_t addr_num, port_num;
+	uint64_t tuple_num, n;
 
 	saddr_num = ntohl(saddr_end.s_addr) - ntohl(saddr_begin.s_addr) + 1;
 	daddr_num = ntohl(daddr_end.s_addr) - ntohl(daddr_begin.s_addr) + 1;
@@ -246,7 +246,7 @@ addresslist_append(struct addresslist *adrlist, uint8_t proto,
 	tuple_num = lcm(addr_num, port_num);
 
 	if (adrlist->tuple_limit < (adrlist->ntuple + tuple_num)) {
-		fprintf(stderr, "too large flowlist: %u: %s-%s:%d-%d - %s-%s:%d-%d\n",
+		fprintf(stderr, "too large flowlist: %lu: %s-%s:%d-%d - %s-%s:%d-%d\n",
 		    adrlist->ntuple + tuple_num,
 		    ip4_sprintf(&saddr_begin), ip4_sprintf(&saddr_end),
 		    sport_begin, sport_end,
@@ -265,7 +265,7 @@ addresslist_append(struct addresslist *adrlist, uint8_t proto,
 	}
 
 	if (newtuple == NULL) {
-		fprintf(stderr, "Cannot allocate memory. number of session is %u\n", adrlist->ntuple + tuple_num);
+		fprintf(stderr, "Cannot allocate memory. number of session is %lu\n", adrlist->ntuple + tuple_num);
 		return -1;
 	}
 
@@ -394,6 +394,15 @@ addresslist_append6(struct addresslist *adrlist, uint8_t proto,
 	daddr_num = ipv6_sub(daddr_end, daddr_begin) + 1;
 	sport_num = sport_end - sport_begin+ 1;
 	dport_num = dport_end - dport_begin+ 1;
+
+	if (saddr_num == 0) {
+		 fprintf(stderr, "address range too large: %s - %s\n", ip6_sprintf(saddr_begin), ip6_sprintf(saddr_end));
+		 return -1;
+	}
+	if (daddr_num == 0) {
+		 fprintf(stderr, "address range too large: %s - %s\n", ip6_sprintf(daddr_begin), ip6_sprintf(daddr_end));
+		 return -1;
+	}
 
 	addr_num = lcm(saddr_num, daddr_num);
 	port_num = lcm(sport_num, dport_num);
