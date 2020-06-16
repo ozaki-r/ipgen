@@ -1298,7 +1298,7 @@ interface_receive(int ifno)
 				interface[ifno].counter.rx_other++;
 #if 1
 			printf("==== len=%d ====\n", len);
-			dumpstr(buf, len);
+			dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
 #endif
 				continue;
 			}
@@ -1450,7 +1450,7 @@ interface_receive(int ifno)
 							    (unsigned long long)nskip,
 							    (unsigned long long)interface[0].sequence_tx,
 							    (unsigned long long)interface[1].sequence_tx);
-							dumpstr(buf, len);
+							dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
 						}
 #endif
 					}

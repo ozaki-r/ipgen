@@ -26,12 +26,14 @@
 #include <sys/types.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "libpkt.h"
 
 int
-fdumpstr(FILE *fp, const char *data, size_t len)
+fdumpstr(FILE *fp, const char *data, size_t len, int flags)
 {
 	char ascii[17];
 	size_t i;
+	const char *eol = (flags & DUMPSTR_FLAGS_CRLF) ? "\r\n" : "\n";
 
 	ascii[16] = '\0';
 	for (i = 0; i < len; i++) {
@@ -46,20 +48,20 @@ fdumpstr(FILE *fp, const char *data, size_t len)
 		ascii[i & 15] = (0x20 <= c && c <= 0x7f) ? c : '.';
 
 		if ((i & 15) == 15)
-			fprintf(fp, " <%s>\n", ascii);
+			fprintf(fp, " <%s>%s", ascii, eol);
 	}
 	ascii[len & 15] = '\0';
 
 	if (len & 15) {
 		const char *white = "                                                ";
-		fprintf(fp, "%s <%s>\n", &white[(len & 15) * 3], ascii);
+		fprintf(fp, "%s <%s>%s", &white[(len & 15) * 3], ascii, eol);
 	}
 
 	return 0;
 }
 
 int
-dumpstr(const char *str, size_t len)
+dumpstr(const char *str, size_t len, int flags)
 {
-	return fdumpstr(stdout, str, len);
+	return fdumpstr(stdout, str, len, flags);
 }

@@ -299,7 +299,7 @@ recv_arpreply(void *arg, unsigned char *buf, int buflen, const char *ifname)
 
 #ifdef DEBUG
 	fprintf(stderr, "recv_arpreply: %s\n", ifname);
-	dumpstr((const char *)buf, buflen);
+	dumpstr((const char *)buf, buflen, 0);
 #endif
 
 	recvarparg = (struct recvarp_arg *)arg;
@@ -321,7 +321,7 @@ recv_nd(void *arg, unsigned char *buf, int buflen, const char *ifname)
 
 #ifdef DEBUG
 	fprintf(stderr, "recv_nd: %s\n", ifname);
-	dumpstr((const char *)buf, buflen);
+	dumpstr((const char *)buf, buflen, 0);
 #endif
 
 	recvndarg = (struct recvnd_arg *)arg;
@@ -714,7 +714,7 @@ arpquery(int fd, const char *ifname, struct ether_addr *sha, struct in_addr *src
 
 #ifdef DEBUG
 	fprintf(stderr, "send arp-query on %s\n", ifname);
-	dumpstr((const char *)&aquery, sizeof(aquery));
+	dumpstr((const char *)&aquery, sizeof(aquery), 0);
 #endif
 
 	/* send an arp-query via bpf */
@@ -731,7 +731,7 @@ ndsolicit(int fd, const char *ifname, struct ether_addr *sha, struct in6_addr *s
 
 #ifdef DEBUG
 	fprintf(stderr, "send nd-solicit on %s\n", ifname);
-	dumpstr((const char *)pktbuf, pktlen);
+	dumpstr((const char *)pktbuf, pktlen, 0);
 #endif
 
 	/* send an arp-query via bpf */

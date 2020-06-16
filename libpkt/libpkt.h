@@ -180,8 +180,9 @@ int ip6pkt_test_cksum(char *, unsigned int);
 
 
 /* debug */
-int fdumpstr(FILE *, const char *, size_t);
-int dumpstr(const char *, size_t);
+#define DUMPSTR_FLAGS_CRLF	0x00000001
+int fdumpstr(FILE *, const char *, size_t, int);
+int dumpstr(const char *, size_t, int);
 
 /* tcpdump file output utility */
 int tcpdumpfile_open(const char *);
