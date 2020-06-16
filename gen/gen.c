@@ -108,6 +108,7 @@ bool use_curses = true;
 
 int use_ipv6 = 0;
 int verbose = 0;
+int opt_debuglevel = 0;
 char *opt_debug = NULL;
 int debug_tcpdump_fd;
 
@@ -1296,10 +1297,10 @@ interface_receive(int ifno)
 				break;
 			default:
 				interface[ifno].counter.rx_other++;
-#if 1
-			printf("==== len=%d ====\n", len);
-			dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
-#endif
+				if (opt_debuglevel > 0) {
+					printf("\r\n\r\n\r\n\r\n\r\n\r\n==== %s: len=%d ====\r\n", interface[ifno].ifname, len);
+					dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
+				}
 				continue;
 			}
 
@@ -1442,17 +1443,17 @@ interface_receive(int ifno)
 							nskip = seqcheck_receive(interface[ifno].seqchecker_perflow[flowid], seqflow);
 
 						nskip = seqcheck_receive(interface[ifno].seqchecker, seq);
-#if 0
-						/* DEBUG */
-						if (nskip > 2) {
-							printf("<seq=%llu, nskip=%llu, tx0=%llu, tx1=%llu>",
-							    (unsigned long long)seq,
-							    (unsigned long long)nskip,
-							    (unsigned long long)interface[0].sequence_tx,
-							    (unsigned long long)interface[1].sequence_tx);
-							dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
+						if (opt_debuglevel > 1) {
+							/* DEBUG */
+							if (nskip > 2) {
+								printf("\r\n\r\n\r\n\r\n\r\n\r\n<seq=%llu, nskip=%llu, tx0=%llu, tx1=%llu>",
+								    (unsigned long long)seq,
+								    (unsigned long long)nskip,
+								    (unsigned long long)interface[0].sequence_tx,
+								    (unsigned long long)interface[1].sequence_tx);
+								dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
+							}
 						}
-#endif
 					}
 				}
 			}
@@ -1892,6 +1893,7 @@ usage(void)
 	       "	--nocurses			no curses mode\n"
 	       "\n"
 	       "	-D <file>			debug. dump all generated packets to <file> as tcpdump file format\n"
+	       "	-d				debug. dump unknown packet\n"
 	);
 
 	exit(1);
@@ -3185,8 +3187,11 @@ main(int argc, char *argv[])
 		interface[i].pktsize = min_pktsize;
 	}
 
-	while ((ch = getopt_long(argc, argv, "D:F:fH:L:n:p:R:S:s:T:tvX", longopts, &optidx)) != -1) {
+	while ((ch = getopt_long(argc, argv, "D:dF:fH:L:n:p:R:S:s:T:tvX", longopts, &optidx)) != -1) {
 		switch (ch) {
+		case 'd':
+			opt_debuglevel++;
+			break;
 		case 'D':
 			opt_debug = optarg;
 			break;
