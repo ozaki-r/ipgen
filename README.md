@@ -9,10 +9,13 @@ usage
 =====
 - setup FreeBSD and config kernel with NETMAP (add "device netmap" to conf/GENERIC).
 - perl and libevent are required to compile.
--- git clone git@github.com:iij/ipgen.git
--- cd ipgen
--- make depend && make && make install
--- run ipgen
+- checkout and build
+```
+git clone git@github.com:iij/ipgen.git
+cd ipgen
+make depend && make && make install
+```
+- run ipgen
 
 
 Presentation materials
