@@ -293,10 +293,7 @@ ENTRY(cpu_in_cksum)
 	movl	$0, %eax
 	call	printf
 	jmp	.Mreturn
-END(cpu_in_cksum)
 
-	.section	.rodata
-	.type		.Mout_of_mbufs_msg, @object
 .Mout_of_mbufs_msg:
 	.string		"in_cksum: out of data\n"
-END(.Mout_of_mbufs_msg)
+END(cpu_in_cksum)
