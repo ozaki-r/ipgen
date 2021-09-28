@@ -29,7 +29,18 @@
  * SUCH DAMAGE.
  */
 
+#ifdef __linux__
+#define CNAME(csym)		csym
+#define _START_ENTRY	.text; .p2align 4,0x90
+#define _ENTRY(x)	_START_ENTRY; \
+			.globl CNAME(x); .type CNAME(x),@function; CNAME(x):; \
+			.cfi_startproc
+#define	ENTRY(x)	_ENTRY(x)
+#define	END(x)		.size x, . - x; .cfi_endproc
+#endif
+#ifdef __FreeBSD__
 #include <machine/asm.h>
+#endif
 #include "assym_dummy_mbuf.h"
 
 ENTRY(cpu_in_cksum)
