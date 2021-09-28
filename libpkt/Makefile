@@ -16,6 +16,7 @@ CFLAGS+=-DUSE_CPU_IN_CKSUM
 SRCS+=	in_cksum.c
 SRCS+=	cpu_in_cksum.S
 
+CFLAGS+=	-Wno-address-of-packed-member
 
 test: libpkt.a
 	cc test.c libpkt.a && ./a.out | tcpdump -vvvv -n -s0 -X -r -

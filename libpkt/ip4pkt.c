@@ -37,6 +37,10 @@
 #include <netinet/tcp.h>
 #include <net/if_arp.h>
 
+#ifndef IPPROTO_IPV4
+#define IPPROTO_IPV4	4
+#endif
+
 int
 ip4pkt_arpparse(char *buf, int *op, struct ether_addr *sha, in_addr_t *spa, in_addr_t *tpa)
 {
