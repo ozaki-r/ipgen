@@ -27,8 +27,10 @@
 #define _UTIL_H_
 
 #include <net/if.h>
+#ifndef __linux__
 #include <net/if_dl.h>
 #include <net/if_types.h>
+#endif
 #include <ifaddrs.h>
 #include <net/ethernet.h>
 
