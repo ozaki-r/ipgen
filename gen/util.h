@@ -41,6 +41,9 @@ struct in_addr *getifipaddr(const char *, struct in_addr *, struct in_addr *);
 struct in6_addr *getifip6addr(const char *, struct in6_addr *, struct in6_addr *);
 uint8_t *getiflinkaddr(const char *, struct ether_addr *);
 int listentcp(in_addr_t, uint16_t);
+void interface_up(const char *);
+uint64_t interface_get_baudrate(const char *);
+void interface_promisc(const char *, int, int *);
 
 
 char *ip4_sprintf(struct in_addr *);
