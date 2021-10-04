@@ -578,11 +578,11 @@ set_pap(int ifno, unsigned int pap)
 static void
 reset_ipg(int ifno)
 {
+#ifdef IPG_HACK
 	char buf[256];
 	const char *drvname = interface[ifno].drvname;
 	unsigned long unit = interface[ifno].unit;
 
-#ifdef IPG_HACK
 	if (!support_ipg)
 		return;
 
@@ -625,7 +625,6 @@ update_transmit_max_sustained_pps(int ifno, int ipg)
 static void
 calc_ipg(int ifno)
 {
-	int new_tipg;
 
 	if (!opt_ipg) {
 		update_transmit_max_sustained_pps(ifno, DEFAULT_IFG);
@@ -633,6 +632,8 @@ calc_ipg(int ifno)
 	}
 
 #ifdef IPG_HACK
+	int new_tipg;
+
 	if (!support_ipg) {
 		update_transmit_max_sustained_pps(ifno, DEFAULT_IFG);
 		return;
