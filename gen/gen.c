@@ -1187,19 +1187,208 @@ ndp_handler(int ifno, char *pkt)
 }
 
 void
-interface_receive(int ifno)
+receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 {
-	char *buf;
-	unsigned int cur, n, i;
 	int is_ipv6;
-	uint16_t len;
-	struct netmap_if *nifp;
-	struct netmap_ring *rxring;
 	struct ether_header *eth;
 	struct ip *ip;
 	struct ip6_hdr *ip6;
 	struct udphdr *udp = NULL;
 	struct tcphdr *tcp = NULL;
+
+	interface[ifno].counter.rx++;
+	if (opt_bps_include_preamble)
+		interface[ifno].counter.rx_byte += len + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS;
+	else
+		interface[ifno].counter.rx_byte += len + FCS;
+
+	/* ignore FLOWCONTROL */
+	eth = (struct ether_header *)buf;
+	switch (ntohs(eth->ether_type)) {
+	case ETHERTYPE_FLOWCONTROL:
+		interface[ifno].counter.rx_flow++;
+		return;
+	case ETHERTYPE_ARP:
+		interface[ifno].counter.rx_arp++;
+		arp_handler(ifno, buf);
+		return;
+	case ETHERTYPE_IP:
+		is_ipv6 = 0;
+		break;
+	case ETHERTYPE_IPV6:
+		is_ipv6 = 1;
+		break;
+	default:
+		interface[ifno].counter.rx_other++;
+		if (opt_debuglevel > 0) {
+			printf("\r\n\r\n\r\n\r\n\r\n\r\n==== %s: len=%d ====\r\n", interface[ifno].ifname, len);
+			dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
+		}
+		return;
+	}
+
+
+	if (is_ipv6) {
+		/* IPv6 packet */
+		ip6 = (struct ip6_hdr *)(eth + 1);
+		if (ip6->ip6_nxt == IPPROTO_ICMPV6) {
+			struct icmp6_hdr *icmp6 = (struct icmp6_hdr *)(ip6 + 1);	/* XXX: no support extension header */
+
+			interface[ifno].counter.rx_icmp++;
+
+			switch (icmp6->icmp6_type) {
+			case ICMP6_DST_UNREACH:
+				interface[ifno].counter.rx_icmpunreach++;
+				return;
+			case ND_REDIRECT:
+				interface[ifno].counter.rx_icmpredirect++;
+				return;
+			case ICMP6_ECHO_REQUEST:
+				interface[ifno].counter.rx_icmpecho++;
+#if NOTYET
+				icmp6echo_handler(ifno, buf, len);
+#endif
+				return;
+
+			case ND_NEIGHBOR_SOLICIT:
+				interface[ifno].counter.rx_arp++;
+				ndp_handler(ifno, buf);
+				return;
+
+			default:
+				interface[ifno].counter.rx_icmpother++;
+				printf("icmp6 receive: type=%d, code=%d\n",
+				    icmp6->icmp6_type, icmp6->icmp6_code);
+				return;
+			}
+		}
+
+		switch (ip6->ip6_nxt) {
+		case IPPROTO_UDP:
+			interface[ifno].counter.rx_udp++;
+			udp = (struct udphdr *)(ip6 + 1);
+			break;
+		case IPPROTO_TCP:
+			interface[ifno].counter.rx_tcp++;
+			tcp = (struct tcphdr *)(ip6 + 1);
+			break;
+		default:
+			interface[ifno].counter.rx_other++;
+			return;
+		}
+
+	} else {
+		/* IPv4 packet */
+		ip = (struct ip *)(eth + 1);
+		if (ip->ip_p == IPPROTO_ICMP) {
+			struct icmp *icmp = (struct icmp *)((char *)ip + ip->ip_hl * 4);
+
+			interface[ifno].counter.rx_icmp++;
+
+			switch (icmp->icmp_type) {
+			case ICMP_UNREACH:
+				interface[ifno].counter.rx_icmpunreach++;
+				return;
+			case ICMP_REDIRECT:
+				interface[ifno].counter.rx_icmpredirect++;
+				return;
+			case ICMP_ECHO:
+				interface[ifno].counter.rx_icmpecho++;
+				icmpecho_handler(ifno, buf, len);
+				return;
+			default:
+				interface[ifno].counter.rx_icmpother++;
+				printf("icmp receive: type=%d, code=%d\n",
+				    icmp->icmp_type, icmp->icmp_code);
+				return;
+			}
+		}
+
+		switch (ip->ip_p) {
+		case IPPROTO_UDP:
+			interface[ifno].counter.rx_udp++;
+			udp = (struct udphdr *)((char *)ip + ip->ip_hl * 4);
+			break;
+		case IPPROTO_TCP:
+			interface[ifno].counter.rx_tcp++;
+			tcp = (struct tcphdr *)((char *)ip + ip->ip_hl * 4);
+			break;
+		default:
+			interface[ifno].counter.rx_other++;
+			return;
+		}
+	}
+
+	if ((opt_udp && (udp != NULL)) || (opt_tcp && (tcp != NULL))) {
+		/* check sequence */
+		struct seqdata *seqdata;
+		struct sequence_record *seqrecord;
+		uint64_t seq, seqflow, nskip;
+		uint32_t flowid;
+		struct timespec ts_delta;
+		double latency;
+
+		if (is_ipv6)
+			seqdata = (struct seqdata *)ip6pkt_getptr(buf, 0);
+		else
+			seqdata = (struct seqdata *)ip4pkt_getptr(buf, 0);
+
+		if (seqdata->magic != seq_magic) {
+			/* no ipgen packet? */
+			interface[ifno].counter.rx_other++;
+
+		} else {
+			seq = seqdata->seq;
+			seqrecord = seqtable_get(interface[ifno].seqtable, seq);
+
+			if ((seqrecord == NULL) || seqrecord->seq != seq) {
+				interface[ifno].counter.rx_expire++;
+			} else {
+				timespecsub(curtime, &seqrecord->ts, &ts_delta);
+				ts_delta.tv_sec &= 0xff;
+				latency = ts_delta.tv_sec / 1000 + ts_delta.tv_nsec / 1000000.0;
+
+				interface[ifno].counter.latency_sum += latency;
+				interface[ifno].counter.latency_npkt++;
+				interface[ifno].counter.latency_avg =
+				    interface[ifno].counter.latency_sum / 
+				    interface[ifno].counter.latency_npkt;
+
+				if ((interface[ifno].counter.latency_min == 0) ||
+				    (interface[ifno].counter.latency_min > latency))
+					interface[ifno].counter.latency_min = latency;
+				if (interface[ifno].counter.latency_max < latency)
+					interface[ifno].counter.latency_max = latency;
+
+				flowid = seqrecord->flowid;
+				seqflow = seqrecord->flowseq;
+				if (get_flowid_max(ifno) >= flowid)
+					nskip = seqcheck_receive(interface[ifno].seqchecker_perflow[flowid], seqflow);
+
+				nskip = seqcheck_receive(interface[ifno].seqchecker, seq);
+				if (opt_debuglevel > 1) {
+					/* DEBUG */
+					if (nskip > 2) {
+						printf("\r\n\r\n\r\n\r\n\r\n\r\n<seq=%llu, nskip=%llu, tx0=%llu, tx1=%llu>",
+						    (unsigned long long)seq,
+						    (unsigned long long)nskip,
+						    (unsigned long long)interface[0].sequence_tx,
+						    (unsigned long long)interface[1].sequence_tx);
+						dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
+					}
+				}
+			}
+		}
+	}
+}
+void
+interface_receive(int ifno)
+{
+	char *buf;
+	unsigned int cur, n, i;
+	uint16_t len;
+	struct netmap_if *nifp;
+	struct netmap_ring *rxring;
 	struct timespec curtime;
 
 	clock_gettime(CLOCK_MONOTONIC, &curtime);
@@ -1218,190 +1407,7 @@ interface_receive(int ifno)
 			buf = NETMAP_BUF(rxring, rxring->slot[cur].buf_idx);
 			len = rxring->slot[cur].len;
 
-			interface[ifno].counter.rx++;
-			if (opt_bps_include_preamble)
-				interface[ifno].counter.rx_byte += len + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS;
-			else
-				interface[ifno].counter.rx_byte += len + FCS;
-
-			/* ignore FLOWCONTROL */
-			eth = (struct ether_header *)buf;
-			switch (ntohs(eth->ether_type)) {
-			case ETHERTYPE_FLOWCONTROL:
-				interface[ifno].counter.rx_flow++;
-				continue;
-			case ETHERTYPE_ARP:
-				interface[ifno].counter.rx_arp++;
-				arp_handler(ifno, buf);
-				continue;
-			case ETHERTYPE_IP:
-				is_ipv6 = 0;
-				break;
-			case ETHERTYPE_IPV6:
-				is_ipv6 = 1;
-				break;
-			default:
-				interface[ifno].counter.rx_other++;
-				if (opt_debuglevel > 0) {
-					printf("\r\n\r\n\r\n\r\n\r\n\r\n==== %s: len=%d ====\r\n", interface[ifno].ifname, len);
-					dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
-				}
-				continue;
-			}
-
-
-			if (is_ipv6) {
-				/* IPv6 packet */
-				ip6 = (struct ip6_hdr *)(eth + 1);
-				if (ip6->ip6_nxt == IPPROTO_ICMPV6) {
-					struct icmp6_hdr *icmp6 = (struct icmp6_hdr *)(ip6 + 1);	/* XXX: no support extension header */
-
-					interface[ifno].counter.rx_icmp++;
-
-					switch (icmp6->icmp6_type) {
-					case ICMP6_DST_UNREACH:
-						interface[ifno].counter.rx_icmpunreach++;
-						continue;
-					case ND_REDIRECT:
-						interface[ifno].counter.rx_icmpredirect++;
-						continue;
-					case ICMP6_ECHO_REQUEST:
-						interface[ifno].counter.rx_icmpecho++;
-#if NOTYET
-						icmp6echo_handler(ifno, buf, len);
-#endif
-						continue;
-
-					case ND_NEIGHBOR_SOLICIT:
-						interface[ifno].counter.rx_arp++;
-						ndp_handler(ifno, buf);
-						continue;
-
-					default:
-						interface[ifno].counter.rx_icmpother++;
-						printf("icmp6 receive: type=%d, code=%d\n",
-						    icmp6->icmp6_type, icmp6->icmp6_code);
-						continue;
-					}
-				}
-
-				switch (ip6->ip6_nxt) {
-				case IPPROTO_UDP:
-					interface[ifno].counter.rx_udp++;
-					udp = (struct udphdr *)(ip6 + 1);
-					break;
-				case IPPROTO_TCP:
-					interface[ifno].counter.rx_tcp++;
-					tcp = (struct tcphdr *)(ip6 + 1);
-					break;
-				default:
-					interface[ifno].counter.rx_other++;
-					continue;
-				}
-
-			} else {
-				/* IPv4 packet */
-				ip = (struct ip *)(eth + 1);
-				if (ip->ip_p == IPPROTO_ICMP) {
-					struct icmp *icmp = (struct icmp *)((char *)ip + ip->ip_hl * 4);
-
-					interface[ifno].counter.rx_icmp++;
-
-					switch (icmp->icmp_type) {
-					case ICMP_UNREACH:
-						interface[ifno].counter.rx_icmpunreach++;
-						continue;
-					case ICMP_REDIRECT:
-						interface[ifno].counter.rx_icmpredirect++;
-						continue;
-					case ICMP_ECHO:
-						interface[ifno].counter.rx_icmpecho++;
-						icmpecho_handler(ifno, buf, len);
-						continue;
-					default:
-						interface[ifno].counter.rx_icmpother++;
-						printf("icmp receive: type=%d, code=%d\n",
-						    icmp->icmp_type, icmp->icmp_code);
-						continue;
-					}
-				}
-
-				switch (ip->ip_p) {
-				case IPPROTO_UDP:
-					interface[ifno].counter.rx_udp++;
-					udp = (struct udphdr *)((char *)ip + ip->ip_hl * 4);
-					break;
-				case IPPROTO_TCP:
-					interface[ifno].counter.rx_tcp++;
-					tcp = (struct tcphdr *)((char *)ip + ip->ip_hl * 4);
-					break;
-				default:
-					interface[ifno].counter.rx_other++;
-					continue;
-				}
-			}
-
-			if ((opt_udp && (udp != NULL)) || (opt_tcp && (tcp != NULL))) {
-				/* check sequence */
-				struct seqdata *seqdata;
-				struct sequence_record *seqrecord;
-				uint64_t seq, seqflow, nskip;
-				uint32_t flowid;
-				struct timespec ts_delta;
-				double latency;
-
-				if (is_ipv6)
-					seqdata = (struct seqdata *)ip6pkt_getptr(buf, 0);
-				else
-					seqdata = (struct seqdata *)ip4pkt_getptr(buf, 0);
-
-				if (seqdata->magic != seq_magic) {
-					/* no ipgen packet? */
-					interface[ifno].counter.rx_other++;
-
-				} else {
-					seq = seqdata->seq;
-					seqrecord = seqtable_get(interface[ifno].seqtable, seq);
-
-					if ((seqrecord == NULL) || seqrecord->seq != seq) {
-						interface[ifno].counter.rx_expire++;
-					} else {
-						timespecsub(&curtime, &seqrecord->ts, &ts_delta);
-						ts_delta.tv_sec &= 0xff;
-						latency = ts_delta.tv_sec / 1000 + ts_delta.tv_nsec / 1000000.0;
-
-						interface[ifno].counter.latency_sum += latency;
-						interface[ifno].counter.latency_npkt++;
-						interface[ifno].counter.latency_avg =
-						    interface[ifno].counter.latency_sum / 
-						    interface[ifno].counter.latency_npkt;
-
-						if ((interface[ifno].counter.latency_min == 0) ||
-						    (interface[ifno].counter.latency_min > latency))
-							interface[ifno].counter.latency_min = latency;
-						if (interface[ifno].counter.latency_max < latency)
-							interface[ifno].counter.latency_max = latency;
-
-						flowid = seqrecord->flowid;
-						seqflow = seqrecord->flowseq;
-						if (get_flowid_max(ifno) >= flowid)
-							nskip = seqcheck_receive(interface[ifno].seqchecker_perflow[flowid], seqflow);
-
-						nskip = seqcheck_receive(interface[ifno].seqchecker, seq);
-						if (opt_debuglevel > 1) {
-							/* DEBUG */
-							if (nskip > 2) {
-								printf("\r\n\r\n\r\n\r\n\r\n\r\n<seq=%llu, nskip=%llu, tx0=%llu, tx1=%llu>",
-								    (unsigned long long)seq,
-								    (unsigned long long)nskip,
-								    (unsigned long long)interface[0].sequence_tx,
-								    (unsigned long long)interface[1].sequence_tx);
-								dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
-							}
-						}
-					}
-				}
-			}
+			receive_packet(ifno, &curtime, buf, len);
 		}
 
 		rxring->head = rxring->cur = cur;
