@@ -209,9 +209,20 @@ getword(char *str, char sep, char **save, char *buf, size_t bufsize)
 int
 interface_is_active(const char *ifname)
 {
-	FILE *fp;
-	char buf[256], *p;
 	int active;
+	FILE *fp;
+	char buf[256];
+#ifdef __linux__
+	active = 0;
+	snprintf(buf, sizeof(buf), "ip link show up dev %s", ifname);
+	fp = popen(buf, "r");
+	fgets(buf, sizeof(buf), fp);
+	/* If the interface is down, it returns empty string */
+	if (strnlen(buf, sizeof(buf) - 1) != 0)
+		active = 1;
+	pclose(fp);
+#else
+	char *p;
 
 	active = 0;
 	snprintf(buf, sizeof(buf), "ifconfig %s", ifname);
@@ -230,6 +241,7 @@ interface_is_active(const char *ifname)
 		}
 	}
 	pclose(fp);
+#endif
 
 	return active;
 }
