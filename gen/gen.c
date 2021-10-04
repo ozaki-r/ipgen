@@ -4002,7 +4002,7 @@ printf("opt_bps_include_preamble=%d\n", opt_bps_include_preamble);
 	if (!opt_txonly) {
 		pthread_create(&txthread0, NULL, tx_thread_main, &ifnum[0]);
 		pthread_create(&rxthread0, NULL, rx_thread_main, &ifnum[0]);
-#ifdef __FreeBSD__
+#ifdef pthread_set_name_np
 		{
 			char buf[128];
 			snprintf(buf, sizeof(buf), "%s-tx", interface[0].ifname);
@@ -4015,7 +4015,7 @@ printf("opt_bps_include_preamble=%d\n", opt_bps_include_preamble);
 	if (!opt_rxonly) {
 		pthread_create(&txthread1, NULL, tx_thread_main, &ifnum[1]);
 		pthread_create(&rxthread1, NULL, rx_thread_main, &ifnum[1]);
-#ifdef __FreeBSD__
+#ifdef pthread_set_name_np
 		{
 			char buf[128];
 			snprintf(buf, sizeof(buf), "%s-tx", interface[1].ifname);
