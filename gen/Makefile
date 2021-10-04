@@ -8,16 +8,17 @@ DESTDIR=	${PREFIX}/bin
 
 PROG=		ipgen
 SRCS=		gen.c util.c webserv.c pbuf.c sequencecheck.c seqtable.c item.c genscript.c flowparse.c pktgen_item.c
-CFLAGS+=	-I.. -I/usr/local/include -g -Wall -DIPG_HACK -DHTDOCS=\"${PREFIX}/share/ipgen/htdocs\"
+CFLAGS+=	-I.. -I/usr/local/include -g -Wall -DHTDOCS=\"${PREFIX}/share/ipgen/htdocs\"
 DPADD=		
 LDADD=		-L../libpkt -lpkt -L../libaddrlist -L/usr/local/lib -laddrlist -lpthread -lc -lcurses -levent -lmd
 MK_MAN=		no
 
 .if ${OS} == "Linux"
-LDADD+=		-lbsd -lcrypto
-CFLAGS+=	-I../../netmap/sys # XXX
-SRCS+=		arpresolv_linux.c
+LDADD+=		-lbsd -lcrypto -lbpf
+CFLAGS+=	-DUSE_AF_XDP
+SRCS+=		arpresolv_linux.c af_xdp.c
 .else
+CFLAGS+=	-DIPG_HACK -DUSE_NETMAP
 SRCS+=		arpresolv.c
 .endif
 
