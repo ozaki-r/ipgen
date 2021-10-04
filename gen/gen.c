@@ -23,25 +23,32 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+#ifdef __linux__
+#define _GNU_SOURCE
+#endif
 #include <pthread.h>
 #ifdef __FreeBSD__
 #include <pthread_np.h>
 #endif
 #include <stdio.h>
-#include <stdint.h>
+#include <stdlib.h>
 #include <ctype.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <poll.h>
 #include <err.h>
 #include <string.h>
 #include <signal.h>
+#include <unistd.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <net/if.h>
+#ifdef USE_NETMAP
 #include <net/netmap.h>
 #define NETMAP_WITH_LIBS
 #include "netmap_user_localdebug.h"
 #include <net/netmap_user.h>
+#endif
 #ifdef __linux__
 #include <netinet/ether.h>
 #include <linux/if.h>
@@ -79,6 +86,10 @@
 #include "flowparse.h"
 
 #include "pktgen_item.h"
+
+#ifdef USE_AF_XDP
+#include "af_xdp.h"
+#endif
 
 #define	LINKSPEED_1GBPS		1000000000ULL
 #define	LINKSPEED_10GBPS	10000000000ULL
@@ -222,7 +233,11 @@ static uint16_t seq_magic;
 
 struct interface {
 	int opened;
+#ifdef USE_NETMAP
 	struct nm_desc *nm_desc;
+#elif defined(USE_AF_XDP)
+	struct ax_desc *ax_desc;
+#endif
 	char ifname[IFNAMSIZ];
 	char drvname[IFNAMSIZ];
 	unsigned long unit;	/* Unit number of the interface */
@@ -930,10 +945,11 @@ interface_setup(int ifno, const char *ifname)
 void
 interface_open(int ifno)
 {
+	int ifno_another;
+#ifdef USE_NETMAP
 	struct nmreq nmreq;
 	struct netmap_if *nifp;
 	struct netmap_ring *txring, *rxring;
-	int ifno_another;
 
 	memset(&nmreq, 0, sizeof(nmreq));
 	sprintf(interface[ifno].netmapname, "netmap:%s", interface[ifno].ifname);
@@ -961,6 +977,13 @@ interface_open(int ifno)
 		    interface[ifno].nm_desc->memsize / 1024 / 1024);
 	printf("\n");
 
+#elif defined(USE_AF_XDP)
+	interface[ifno].ax_desc = ax_open(interface[ifno].ifname);
+	if (interface[ifno].ax_desc == NULL) {
+		fprintf(stderr, "failed to initialize AF_XDP\n");
+		exit(1);
+	}
+#endif
 
 	ifno_another = ifno ^ 1;
 
@@ -981,6 +1004,7 @@ interface_close(int ifno)
 	if (use_ipv6 || interface[ifno_another].gw_l2random)
 		interface_promisc(interface[ifno].ifname, interface[ifno].promisc_save, NULL);
 
+#ifdef USE_NETMAP
 #if 0	/* XXX */
 	/*
 	 * XXX: freebsd bug? closing netmap file descriptor sometimes cause panic
@@ -1009,6 +1033,9 @@ interface_close(int ifno)
 	nm_close(interface[ifno].nm_desc);
 #endif
 
+#elif defined(USE_AF_XDP)
+	ax_close(interface[ifno].ax_desc);
+#endif
 	reset_ipg(ifno);
 
 	interface[ifno].opened = 0;
@@ -1377,9 +1404,11 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 		}
 	}
 }
+
 void
 interface_receive(int ifno)
 {
+#ifdef USE_NETMAP
 	char *buf;
 	unsigned int cur, n, i;
 	uint16_t len;
@@ -1408,12 +1437,37 @@ interface_receive(int ifno)
 
 		rxring->head = rxring->cur = cur;
 	}
+#elif defined(USE_AF_XDP)
+	unsigned int i, npkts;
+	struct timespec curtime;
+	struct ax_rx_handle handle;
 
+	npkts = ax_wait_for_packets(interface[ifno].ax_desc, &handle);
+	if (npkts == 0)
+		return;
+
+	clock_gettime(CLOCK_MONOTONIC, &curtime);
+
+	/* Process received packets */
+	for (i = 0; i < npkts; i++) {
+		char *buf;
+		uint32_t len;
+
+		buf = ax_get_rx_buf(interface[ifno].ax_desc, &len, &handle);
+
+		receive_packet(ifno, &curtime, buf, len);
+
+		ax_rx_handle_advance(&handle);
+	}
+
+	ax_complete_rx(interface[ifno].ax_desc, npkts);
+#endif
 }
 
 int
 interface_transmit(int ifno)
 {
+#ifdef USE_NETMAP
 	char *buf;
 	unsigned int cur, nspace, npkt, n;
 #ifdef USE_MULTI_TX_QUEUE
@@ -1459,6 +1513,36 @@ interface_transmit(int ifno)
 		txring->head = txring->cur = cur;
 #ifdef USE_MULTI_TX_QUEUE
 	}
+#endif
+#elif defined(USE_AF_XDP)
+	unsigned int i, npkt;
+	int sentpkttype;
+	uint32_t idx;
+
+	npkt = interface_need_transmit(ifno);
+	npkt = MIN(npkt, opt_npkt_sync);
+
+	idx = ax_prepare_tx(interface[ifno].ax_desc, &npkt);
+
+	clock_gettime(CLOCK_MONOTONIC, &currenttime_tx);
+
+	for (i = 0; i < npkt; i++) {
+		char *buf;
+		uint32_t *lenp;
+
+		buf = ax_get_tx_buf(interface[ifno].ax_desc, &lenp, idx, i);
+
+		sentpkttype = interface_load_transmit_packet(ifno, buf, (uint16_t *)lenp);
+		if (sentpkttype < 0)
+			break;
+		if (opt_bps_include_preamble)
+			interface[ifno].counter.tx_byte += *lenp + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS;
+		else
+			interface[ifno].counter.tx_byte += *lenp + FCS;
+		interface[ifno].counter.tx++;
+	}
+
+	ax_complete_tx(interface[ifno].ax_desc, npkt);
 #endif
 
 	return 0;
@@ -1904,7 +1988,9 @@ tx_thread_main(void *arg)
 		}
 
 		interface_transmit(ifno);
+#ifdef USE_NETMAP
 		ioctl(interface[ifno].nm_desc->fd, NIOCTXSYNC, NULL);
+#endif
 	}
 
 	return NULL;
@@ -1923,7 +2009,11 @@ rx_thread_main(void *arg)
 
 	/* setup poll */
 	memset(pollfd, 0, sizeof(pollfd));
+#ifdef USE_NETMAP
 	pollfd[0].fd = interface[ifno].nm_desc->fd;
+#elif defined(USE_AF_XDP)
+	pollfd[0].fd = ax_get_fd(interface[ifno].ax_desc);
+#endif
 
 	while (do_quit == 0) {
 		pollfd[0].events = POLLIN;
@@ -2808,10 +2898,14 @@ itemlist_callback_startstop(struct itemlist *itemlist, struct item *item, void *
 void
 control_init_items(struct itemlist *itemlist)
 {
+#ifdef USE_NETMAP
 	static int netmap_api = NETMAP_API;
+#endif
 
 	itemlist_register_item(itemlist, ITEMLIST_ID_IPGEN_VERSION, NULL, ipgen_version);
+#ifdef USE_NETMAP
 	itemlist_setvalue(itemlist, ITEMLIST_ID_NETMAP_API, &netmap_api);
+#endif
 
 	itemlist_register_item(itemlist, ITEMLIST_ID_IFNAME0, NULL, interface[0].decorated_ifname);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IFNAME1, NULL, interface[1].decorated_ifname);
@@ -4001,6 +4095,22 @@ printf("opt_bps_include_preamble=%d\n", opt_bps_include_preamble);
 			pthread_set_name_np(rxthread0, buf);
 		}
 #endif
+#ifdef __linux__
+		int error, i;
+		long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+		cpu_set_t cpuset;
+		CPU_ZERO(&cpuset);
+		for (i = 0; i < nprocs; i += 2)
+			CPU_SET(i, &cpuset);
+		error = pthread_setaffinity_np(txthread0, sizeof(cpuset), &cpuset);
+		error = pthread_setaffinity_np(rxthread0, sizeof(cpuset), &cpuset);
+#if 0
+		struct sched_param param;
+		param.sched_priority = sched_get_priority_max(SCHED_FIFO);
+		error = pthread_setschedparam(txthread0, SCHED_FIFO, &param);
+		error = pthread_setschedparam(rxthread0, SCHED_FIFO, &param);
+#endif
+#endif
 	}
 	if (!opt_rxonly) {
 		pthread_create(&txthread1, NULL, tx_thread_main, &ifnum[1]);
@@ -4013,6 +4123,27 @@ printf("opt_bps_include_preamble=%d\n", opt_bps_include_preamble);
 			snprintf(buf, sizeof(buf), "%s-rx", interface[1].ifname);
 			pthread_set_name_np(rxthread1, buf);
 		}
+#endif
+#ifdef __linux__
+		int error, i;
+		long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+		cpu_set_t cpuset;
+		CPU_ZERO(&cpuset);
+		if (nprocs == 1) {
+			warn("Tx and Rx threads share a CPU");
+			CPU_SET(0, &cpuset);
+		} else {
+			for (i = 1; i < nprocs; i += 2)
+				CPU_SET(i, &cpuset);
+		}
+		error = pthread_setaffinity_np(txthread1, sizeof(cpuset), &cpuset);
+		error = pthread_setaffinity_np(rxthread1, sizeof(cpuset), &cpuset);
+#if 0
+		struct sched_param param;
+		param.sched_priority = sched_get_priority_max(SCHED_FIFO);
+		error = pthread_setschedparam(txthread1, SCHED_FIFO, &param);
+		error = pthread_setschedparam(rxthread1, SCHED_FIFO, &param);
+#endif
 #endif
 	}
 
