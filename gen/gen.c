@@ -1448,7 +1448,6 @@ interface_receive(int ifno)
 
 	clock_gettime(CLOCK_MONOTONIC, &curtime);
 
-	/* Process received packets */
 	for (i = 0; i < npkts; i++) {
 		char *buf;
 		uint32_t len;
@@ -4100,6 +4099,7 @@ printf("opt_bps_include_preamble=%d\n", opt_bps_include_preamble);
 		long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
 		cpu_set_t cpuset;
 		CPU_ZERO(&cpuset);
+		/* Assign even CPU cores to Tx threads, the others to Rx thread */
 		for (i = 0; i < nprocs; i += 2)
 			CPU_SET(i, &cpuset);
 		error = pthread_setaffinity_np(txthread0, sizeof(cpuset), &cpuset);
@@ -4130,7 +4130,7 @@ printf("opt_bps_include_preamble=%d\n", opt_bps_include_preamble);
 		cpu_set_t cpuset;
 		CPU_ZERO(&cpuset);
 		if (nprocs == 1) {
-			warn("Tx and Rx threads share a CPU");
+			fprintf(stderr, "warning: Tx and Rx threads share a CPU");
 			CPU_SET(0, &cpuset);
 		} else {
 			for (i = 1; i < nprocs; i += 2)
