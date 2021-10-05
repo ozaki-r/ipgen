@@ -30,11 +30,10 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/mman.h>
-
+#include <sys/resource.h>
+#include <linux/if_link.h>
 #include <bpf/bpf.h>
 #include <bpf/xsk.h>
-#include <linux/if_link.h>
-#include <sys/resource.h>
 #include <bsd/sys/param.h>
 
 #include "af_xdp.h"
@@ -51,14 +50,15 @@ struct ax_socket {
 	struct xsk_ring_cons	cring; /* Completion ring */
 	struct xsk_socket	*xsk;
 	struct xsk_umem		*umem;
-	void			*mem;
+	void			*pkt_buffer;
 	uint32_t		inflight_tx_pkts;
-	uint32_t		frame_pos;
+	/* current frame index in the pkt_buffer */
+	uint32_t		tx_frame_idx;
 	bool			do_wakeup;
 };
 
 static struct ax_socket *
-ax_setup_socket(const char *ifname, void *mem, size_t size)
+ax_setup_socket(const char *ifname, void *pkt_buffer, size_t size)
 {
 	struct xsk_socket_config cfg;
 	struct ax_socket *axs;
@@ -68,13 +68,13 @@ ax_setup_socket(const char *ifname, void *mem, size_t size)
 	if (axs == NULL)
 		return NULL;
 
-	rc = xsk_umem__create(&axs->umem, mem, size, &axs->fring, &axs->cring, NULL);
+	rc = xsk_umem__create(&axs->umem, pkt_buffer, size, &axs->fring, &axs->cring, NULL);
 	if (rc != 0) {
-		errno = -rc;
+		fprintf(stderr, "xsk_umem__create failed: %d\n", -rc);
 		free(axs);
 		return NULL;
 	}
-	axs->mem = mem;
+	axs->pkt_buffer = pkt_buffer;
 
 	cfg.rx_size = NUM_DESCS;
 	cfg.tx_size = NUM_DESCS;
@@ -91,7 +91,7 @@ ax_setup_socket(const char *ifname, void *mem, size_t size)
 	rc = xsk_socket__create(&axs->xsk, ifname, 0 /* XXX */, axs->umem,
 				 &axs->rring, &axs->tring, &cfg);
 	if (rc != 0) {
-		fprintf(stderr, "xsk_socket__create failed: %d\n", rc);
+		fprintf(stderr, "xsk_socket__create failed: %d\n", -rc);
 		xsk_umem__delete(axs->umem);
 		free(axs);
 		return NULL;
@@ -160,6 +160,11 @@ ax_wait_for_packets(struct ax_desc *ax_desc, struct ax_rx_handle *handle)
 		}
 		return 0;
 	}
+	/*
+	 * Used receive buffers will be immediately set to the fill ring,
+	 * so here we need to preserver the same number of entries as
+	 * received packets.
+	 */
 	ret = xsk_ring_prod__reserve(&axs->fring, npkts, &handle->fring_idx);
 	while (ret != npkts) {
 		if (axs->do_wakeup && xsk_ring_prod__needs_wakeup(&axs->fring)) {
@@ -187,10 +192,14 @@ ax_get_rx_buf(struct ax_desc *ax_desc, uint32_t *lenp, struct ax_rx_handle *hand
 	struct ax_socket *axs = ax_desc->axs;
 	const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&axs->rring, handle->rring_idx);
 
+	/*
+	 * XXX registering the buffer before accessing received data is racy
+	 * but it's unlikely to be a problem if the number of descriptors is enough large.
+	 */
 	*xsk_ring_prod__fill_addr(&axs->fring, handle->fring_idx) = desc->addr;
 
 	*lenp = desc->len;
-	return (char *)xsk_umem__get_data(axs->mem, desc->addr);
+	return (char *)xsk_umem__get_data(axs->pkt_buffer, desc->addr);
 }
 
 uint32_t
@@ -215,8 +224,8 @@ ax_complete_tx(struct ax_desc *ax_desc, unsigned int npkts)
 
 	xsk_ring_prod__submit(&axs->tring, npkts);
 	axs->inflight_tx_pkts += npkts;
-	axs->frame_pos += npkts;
-	axs->frame_pos %= NUM_FRAMES;
+	axs->tx_frame_idx += npkts;
+	axs->tx_frame_idx %= NUM_FRAMES;
 	ax_complete_tx0(axs, npkts);
 }
 
@@ -227,8 +236,8 @@ ax_get_tx_buf(struct ax_desc *ax_desc, uint32_t **lenp, uint32_t idx, int i)
 	char *buf;
 	struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&axs->tring, idx + i);
 
-	tx_desc->addr = (axs->frame_pos + i) * FRAME_SIZE;
-	buf = xsk_umem__get_data(axs->mem, tx_desc->addr);
+	tx_desc->addr = (axs->tx_frame_idx + i) * FRAME_SIZE;
+	buf = xsk_umem__get_data(axs->pkt_buffer, tx_desc->addr);
 
 	*lenp = &tx_desc->len;
 	return buf;
@@ -237,24 +246,28 @@ ax_get_tx_buf(struct ax_desc *ax_desc, uint32_t **lenp, uint32_t idx, int i)
 struct ax_desc *
 ax_open(const char *ifname)
 {
-	void *mem;
+	void *pkt_buffer;
 	size_t mem_size;
 	struct ax_socket *axs;
 	struct ax_desc *ax_desc;
 	int rc;
 
 	ax_desc = malloc(sizeof(*ax_desc));
+	if (ax_desc == NULL) {
+		fprintf(stderr, "malloc failed: %s\n", strerror(errno));
+		return NULL;
+	}
 
 	/* Allocate memory areas for tx and rx at once */
 	mem_size = NUM_FRAMES * 2 * FRAME_SIZE;
-	mem = mmap(NULL, mem_size, PROT_READ | PROT_WRITE,
+	pkt_buffer = mmap(NULL, mem_size, PROT_READ | PROT_WRITE,
 		   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (mem == MAP_FAILED) {
+	if (pkt_buffer == MAP_FAILED) {
 		fprintf(stderr, "mmap failed: %s\n", strerror(errno));
 		return NULL;
 	}
 
-	axs = ax_setup_socket(ifname, mem, mem_size);
+	axs = ax_setup_socket(ifname, pkt_buffer, mem_size);
 	if (axs == NULL) {
 		fprintf(stderr, "ax_setup_socket failed\n");
 		return NULL;
