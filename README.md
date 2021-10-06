@@ -17,6 +17,11 @@ make depend && make && make install
 ```
 - run ipgen
 
+For Linux users
+===============
+
+ipgen works on Linux too.
+See [README.linux](README.linux.md) for details.
 
 Presentation materials
 ======================
