@@ -28,6 +28,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/errno.h>
+#ifdef __linux__
+#include <bsd/sys/queue.h>
+#endif
 #include <event.h>
 #include "webserv.h"
 #include "gen.h"

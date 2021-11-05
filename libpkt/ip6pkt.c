@@ -57,6 +57,18 @@
 #define IPV6_ADDR_INT16_USL		0xc0fe
 #define IPV6_ADDR_INT16_MLL		0x02ff
 #endif
+#ifndef IPV6_VERSION
+#define IPV6_VERSION          0x60
+#endif
+#ifndef IPV6_VERSION_MASK
+#define IPV6_VERSION_MASK     0xf0
+#endif
+#ifndef IPV6_FLOWINFO_MASK
+#define IPV6_FLOWINFO_MASK    0x0fffffff
+#endif
+#ifdef __linux__
+#define s6_addr8  s6_addr
+#endif
 #ifndef s6_addr8
 #define s6_addr8  __u6_addr.__u6_addr8
 #endif

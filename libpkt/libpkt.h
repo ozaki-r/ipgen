@@ -40,6 +40,9 @@
 #elif defined(__FreeBSD__)
 #include <net/ethernet.h>
 #define ether_addr_octet octet
+#elif defined(__linux__)
+#include <net/ethernet.h>
+#define __packed	__attribute__((__packed__))
 #endif
 #include <stdio.h>
 

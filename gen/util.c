@@ -25,11 +25,28 @@
  */
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <err.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <net/if.h>
+#ifdef __FreeBSD__
+#include <net/if_mib.h>
+#include <sys/sysctl.h>
+#include <sys/ioctl.h>
+#endif
+#ifdef __linux__
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
+#include <bsd/string.h>
+#endif
 #include "util.h"
+#include "compat.h"
 
 char *
 ip6_sprintf(struct in6_addr *addr)
@@ -192,9 +209,20 @@ getword(char *str, char sep, char **save, char *buf, size_t bufsize)
 int
 interface_is_active(const char *ifname)
 {
-	FILE *fp;
-	char buf[256], *p;
 	int active;
+	FILE *fp;
+	char buf[256];
+#ifdef __linux__
+	active = 0;
+	snprintf(buf, sizeof(buf), "ip link show up dev %s", ifname);
+	fp = popen(buf, "r");
+	fgets(buf, sizeof(buf), fp);
+	/* If the interface is down, it returns empty string */
+	if (strnlen(buf, sizeof(buf) - 1) != 0)
+		active = 1;
+	pclose(fp);
+#else
+	char *p;
 
 	active = 0;
 	snprintf(buf, sizeof(buf), "ifconfig %s", ifname);
@@ -213,6 +241,7 @@ interface_is_active(const char *ifname)
 		}
 	}
 	pclose(fp);
+#endif
 
 	return active;
 }
@@ -274,6 +303,24 @@ getifip6addr(const char *ifname, struct in6_addr *addr, struct in6_addr *netmask
 uint8_t *
 getiflinkaddr(const char *ifname, struct ether_addr *addr)
 {
+#ifdef __linux__
+	int fd;
+	struct ifreq ifr;
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+	ifr.ifr_addr.sa_family = AF_INET;
+	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
+
+	int r = ioctl(fd, SIOCGIFHWADDR, &ifr);
+	if (r == -1) {
+		return NULL;
+	}
+
+	close(fd);
+	memcpy(addr, &ifr.ifr_hwaddr.sa_data, sizeof(*addr));
+	return (uint8_t *)addr;
+#else
 	struct ifaddrs *ifap, *ifa;
 	const struct sockaddr_dl *sdl;
 	int found = 0;
@@ -299,6 +346,7 @@ getiflinkaddr(const char *ifname, struct ether_addr *addr)
 
 	freeifaddrs(ifap);
 	return found ? (uint8_t *)addr : NULL;
+#endif
 }
 
 int
@@ -317,12 +365,14 @@ listentcp(in_addr_t addr, uint16_t port)
 	setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (void *)&on, sizeof(on));
 
 	memset(&sin, 0, sizeof(sin));
+#ifndef __linux__
 	sin.sin_len = sizeof(sin);
+#endif
 	sin.sin_family = AF_INET;
 	sin.sin_port = htons(port);
 	sin.sin_addr.s_addr = addr;
 
-	rc = bind(s, (struct sockaddr *)&sin, sin.sin_len);
+	rc = bind(s, (struct sockaddr *)&sin, sizeof(sin));
 	if (rc < 0) {
 		warn("bind");
 		close(s);
@@ -336,4 +386,137 @@ listentcp(in_addr_t addr, uint16_t port)
 	}
 
 	return s;
+}
+
+void
+interface_up(const char *ifname)
+{
+#ifdef __linux__
+	char buf[256];
+	snprintf(buf, sizeof(buf), "ip link set up dev %s", ifname);
+	int r = system(buf);
+	(void)r; /* FIXME */
+#else
+	char buf[256];
+	snprintf(buf, sizeof(buf), "ifconfig %s up", ifname);
+	int r = system(buf);
+	(void)r; /* FIXME */
+#endif
+}
+
+uint64_t
+interface_get_baudrate(const char *ifname)
+{
+#ifdef __linux__
+	int s, rc;
+	struct ethtool_value ev = {0};
+	struct ethtool_cmd ec = {0};
+	struct ifreq ifr;
+
+	ev.cmd = ETHTOOL_GLINK;
+	ifr.ifr_data = (char *)&ev;
+	strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+
+	s = socket(AF_INET, SOCK_DGRAM, 0);
+	rc = ioctl(s, SIOCETHTOOL, &ifr);
+	if (rc != 0) {
+		close(s);
+		warn("ioctl(ETHTOOL_GLINK) failed\n");
+		return 0;
+	}
+	ec.cmd = ETHTOOL_GSET;
+	ifr.ifr_data = (char *)&ec;
+	rc = ioctl(s, SIOCETHTOOL, &ifr);
+	close(s);
+	if (rc != 0) {
+		warn("ioctl(ETHTOOL_GSET) failed\n");
+		return 0;
+	}
+	uint32_t speed = ethtool_cmd_speed(&ec);
+	if (speed == 0) {
+		warn("linkspeed unknown\n");
+		return 0;
+	}
+	return IF_Mbps((uint64_t)speed);
+#else
+	unsigned int ifindex;
+	struct ifmibdata ifmd;
+	int name[6];
+	size_t len;
+	int rv;
+
+	ifindex = if_nametoindex(ifname);
+
+	if (ifindex == 0) {
+		warn("Failed to get ifindex\n");
+		return 0;
+	}
+
+	name[0] = CTL_NET;
+	name[1] = PF_LINK;
+	name[2] = NETLINK_GENERIC;
+	name[3] = IFMIB_IFDATA;
+	name[4] = ifindex;
+	name[5] = IFDATA_GENERAL;
+	len = sizeof(ifmd);
+
+	rv = sysctl(name, 6, &ifmd, &len, 0, 0);
+	if (rv < 0) {
+		warn("Failed to get ifdata\n");
+		return 0;
+	}
+
+	return ifmd.ifmd_data.ifi_baudrate;
+#endif
+}
+
+void
+interface_promisc(const char *ifname, int enable, int *old)
+{
+	struct ifreq ifr;
+	int flags, rc;
+	int fd;
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd == -1) {
+		warn("socket");
+		return;
+	}
+
+	memset(&ifr, 0, sizeof(ifr));
+	strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+	rc = ioctl(fd, SIOCGIFFLAGS, (caddr_t)&ifr);
+	if (rc == -1) {
+		fprintf(stderr, "ioctl: SIOCGIFFLAGS: %s\n", strerror(errno));
+		goto out;
+	}
+
+#ifdef IFF_PPROMISC
+	flags = (ifr.ifr_flags & 0xffff) | (ifr.ifr_flagshigh << 16);
+
+	if (old != NULL)
+		*old = (flags & IFF_PPROMISC);
+
+	if (enable)
+		flags |= IFF_PPROMISC;
+	else
+		flags &= ~IFF_PPROMISC;
+	ifr.ifr_flags = flags & 0xffff;
+	ifr.ifr_flagshigh = flags >> 16;
+#else
+	flags = ifr.ifr_flags;
+	if (old != NULL)
+		*old = (flags & IFF_PROMISC);
+	if (enable)
+		flags |= IFF_PROMISC;
+	else
+		flags &= ~IFF_PROMISC;
+	ifr.ifr_flags = flags;
+#endif
+
+	rc = ioctl(fd, SIOCSIFFLAGS, (caddr_t)&ifr);
+	if (rc == -1)
+		fprintf(stderr, "ioctl: SIOCSIFFLAGS: %s\n", strerror(errno));
+out:
+	close(fd);
 }

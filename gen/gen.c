@@ -28,13 +28,13 @@
 #include <pthread_np.h>
 #endif
 #include <stdio.h>
+#include <stdint.h>
 #include <ctype.h>
 #include <getopt.h>
 #include <poll.h>
 #include <err.h>
 #include <string.h>
 #include <signal.h>
-#include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <net/if.h>
@@ -42,9 +42,13 @@
 #define NETMAP_WITH_LIBS
 #include "netmap_user_localdebug.h"
 #include <net/netmap_user.h>
+#ifdef __linux__
+#include <netinet/ether.h>
+#include <linux/if.h>
+#else
 #include <machine/atomic.h>
+#endif
 #include <net/ethernet.h>
-#include <net/if_mib.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
@@ -53,6 +57,14 @@
 #include <net/if_arp.h>
 #include <arpa/inet.h>
 
+#ifdef __linux__
+#include <event.h>
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <bsd/string.h>
+#endif
+
+#include "compat.h"
 #include "arpresolv.h"
 #include "libpkt/libpkt.h"
 #include "libaddrlist/libaddrlist.h"
@@ -840,47 +852,6 @@ transmit_set(int ifno, int on)
 }
 
 void
-interface_up(const char *ifname)
-{
-	char buf[256];
-	snprintf(buf, sizeof(buf), "ifconfig %s up", ifname);
-	system(buf);
-}
-
-uint64_t
-interface_get_baudrate(const char *ifname)
-{
-	unsigned int ifindex;
-	struct ifmibdata ifmd;
-	int name[6];
-	size_t len;
-	int rv;
-
-	ifindex = if_nametoindex(ifname);
-
-	if (ifindex == 0) {
-		fprintf(stderr, "Failed to get ifindex\n");
-		exit(1);
-	}
-
-	name[0] = CTL_NET;
-	name[1] = PF_LINK;
-	name[2] = NETLINK_GENERIC;
-	name[3] = IFMIB_IFDATA;
-	name[4] = ifindex;
-	name[5] = IFDATA_GENERAL;
-	len = sizeof(ifmd);
-
-	rv = sysctl(name, 6, &ifmd, &len, 0, 0);
-	if (rv < 0) {
-		warn("Failed to get ifdata\n");
-		return 0;
-	}
-
-	return ifmd.ifmd_data.ifi_baudrate;
-}
-
-void
 interface_wait_linkup(const char *ifname)
 {
 	int i;
@@ -960,37 +931,6 @@ interface_setup(int ifno, const char *ifname)
 }
 
 void
-interface_promisc(int ifno, const char *ifname, int enable, int *old)
-{
-	struct ifreq ifr;
-	int flags, rc;
-
-	memset(&ifr, 0, sizeof(ifr));
-	strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
-	rc = ioctl(interface[ifno].nm_desc->fd, SIOCGIFFLAGS, (caddr_t)&ifr);
-	if (rc == -1) {
-		fprintf(stderr, "netmap: ioctl: SIOCGIFFLAGS: %s\n", strerror(errno));
-		return;
-	}
-
-	flags = (ifr.ifr_flags & 0xffff) | (ifr.ifr_flagshigh << 16);
-
-	if (old != NULL)
-		*old = (flags & IFF_PPROMISC);
-
-	if (enable)
-		flags |= IFF_PPROMISC;
-	else
-		flags &= ~IFF_PPROMISC;
-	ifr.ifr_flags = flags & 0xffff;
-	ifr.ifr_flagshigh = flags >> 16;
-
-	rc = ioctl(interface[ifno].nm_desc->fd, SIOCSIFFLAGS, (caddr_t)&ifr);
-	if (rc == -1)
-		fprintf(stderr, "netmap: ioctl: SIOCSIFFLAGS: %s\n", strerror(errno));
-}
-
-void
 interface_open(int ifno)
 {
 	struct nmreq nmreq;
@@ -1029,7 +969,7 @@ interface_open(int ifno)
 
 	/* for IPv6 multicast packet (ndp, etc), or bridge random L2 address mode */
 	if (use_ipv6 || interface[ifno_another].gw_l2random)
-		interface_promisc(ifno, interface[ifno].ifname, true, &interface[ifno].promisc_save);
+		interface_promisc(interface[ifno].ifname, true, &interface[ifno].promisc_save);
 
 	interface[ifno].opened = 1;
 }
@@ -1042,7 +982,7 @@ interface_close(int ifno)
 	ifno_another = ifno ^ 1;
 
 	if (use_ipv6 || interface[ifno_another].gw_l2random)
-		interface_promisc(ifno, interface[ifno].ifname, interface[ifno].promisc_save, NULL);
+		interface_promisc(interface[ifno].ifname, interface[ifno].promisc_save, NULL);
 
 #if 0	/* XXX */
 	/*
