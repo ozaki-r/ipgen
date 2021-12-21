@@ -1,4 +1,4 @@
-          ipgen - interactive packet generator ver######## - netmap API:##	id=ipgen_version,LEFT,STR	id=netmap_api,U32
+          ipgen - interactive packet generator ver######## - API:#########	id=ipgen_version,LEFT,STR	id=ipgen_api,LEFT,STR
                                                                           
       #################### ######### ######### ####################       	id=ifname0,RIGHT,STR	id=twiddle0,STR,LEFT	id=twiddle1,STR	id=ifname1,LEFT,STR
                                                                           

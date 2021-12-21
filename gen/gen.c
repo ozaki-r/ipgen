@@ -2912,14 +2912,15 @@ itemlist_callback_startstop(struct itemlist *itemlist, struct item *item, void *
 void
 control_init_items(struct itemlist *itemlist)
 {
-#ifdef USE_NETMAP
-	static int netmap_api = NETMAP_API;
-#endif
+	static char ipgen_api[16];
 
 	itemlist_register_item(itemlist, ITEMLIST_ID_IPGEN_VERSION, NULL, ipgen_version);
 #ifdef USE_NETMAP
-	itemlist_setvalue(itemlist, ITEMLIST_ID_NETMAP_API, &netmap_api);
+	snprintf(ipgen_api, sizeof(ipgen_api), "netmap:%d", NETMAP_API);
+#else
+	snprintf(ipgen_api, sizeof(ipgen_api), "XDP");
 #endif
+	itemlist_setvalue(itemlist, ITEMLIST_ID_IPGEN_API, &ipgen_api);
 
 	itemlist_register_item(itemlist, ITEMLIST_ID_IFNAME0, NULL, interface[0].decorated_ifname);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IFNAME1, NULL, interface[1].decorated_ifname);
