@@ -28,7 +28,7 @@
                 max: ########### ms               max: ########### ms     	id=if0_latency_max,DBL		id=if1_latency_max,DBL
                 avg: ########### ms               avg: ########### ms     	id=if0_latency_avg,DBL		id=if1_latency_avg,DBL
                                                                           
-  Control:      Hz: ######          bps: L1[#]/L2[#]                      	id=pps_hz,LEFT,U32		id=button_bps_l1,BUTTON	id=button_bps_l2,BUTTON
+  Control:      Hz: ######          bps: L1[#]/L2[#] #####################	id=pps_hz,LEFT,U32		id=button_bps_l1,BUTTON	id=button_bps_l2,BUTTON		id=bps_desc,LEFT,STR
               Flow:[#######]    Traffic: Burst[#]/Steady[#]               	id=opt_nflow,LEFT,U32,EDIT	id=button_burst,BUTTON	id=button_steady,BUTTON
   TX-control:                                                             
         TX-pktsize:[##########]           TX-pktsize:[##########]         	id=if0_pktsize,LEFT,U32,EDIT	id=if1_pktsize,LEFT,U32,EDIT

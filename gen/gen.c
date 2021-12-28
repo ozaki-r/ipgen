@@ -201,9 +201,11 @@ pthread_t controlthread;
 
 const uint8_t eth_zero[6] = { 0, 0, 0, 0, 0, 0 };
 
-#define	PKTSIZE2FRAMESIZE(x)	((x) + DEFAULT_IFG + DEFAULT_PREAMBLE + FCS)
+char bps_desc[32];
+
+#define	PKTSIZE2FRAMESIZE(x, gap)	(DEFAULT_PREAMBLE + (x) + FCS + (gap))
 #define	_CALC_BPS(pktsize, pps)	\
-	((PKTSIZE2FRAMESIZE((pktsize) + ETHHDRSIZE) * (pps)) * 8.0)
+	((PKTSIZE2FRAMESIZE((pktsize) + ETHHDRSIZE, DEFAULT_IFG) * (pps)) * 8.0)
 #define	_CALC_MBPS(pktsize, pps)	\
 	(_CALC_BPS(pktsize, pps) / 1000.0 / 1000.0)
 
@@ -629,7 +631,7 @@ update_transmit_max_sustained_pps(int ifno, int ipg)
 {
 	uint32_t maxpps;
 
-	maxpps = interface[ifno].maxlinkspeed / 8 / PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE - DEFAULT_IFG + ipg);
+	maxpps = interface[ifno].maxlinkspeed / 8 / PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE, ipg);
 
 	if (interface[ifno].transmit_pps <= pps_hz)
 		maxpps = interface[ifno].transmit_pps;
@@ -647,60 +649,55 @@ calc_ipg(int ifno)
 	}
 
 #ifdef IPG_HACK
-	int new_tipg;
+	int dev_tipg, ipg = DEFAULT_IFG;
 
 	if (!support_ipg) {
 		update_transmit_max_sustained_pps(ifno, DEFAULT_IFG);
 		return;
 	}
 
-	if ((strncmp(interface[ifno].ifname, "em", 2) == 0)
-	    || (strncmp(interface[ifno].ifname, "igb", 3) == 0)) {
+	if ((strncmp(interface[ifno].ifname, "em", 2) == 0) ||
+	    (strncmp(interface[ifno].ifname, "igb", 3) == 0)) {
 
 		if (interface[ifno].transmit_pps == 0) {
-			new_tipg = INT_MAX;
+			dev_tipg = INT_MAX;
 		} else {
-			new_tipg =
+			dev_tipg =
 			    ((interface[ifno].maxlinkspeed / 8) / interface[ifno].transmit_pps) -
-			    PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE - DEFAULT_IFG);
+			    PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE, 0);
 		}
-		new_tipg -= 4;	/* igb(4) NIC, ipg has offset 4 */
+		dev_tipg -= 4;	/* igb(4) NIC, ipg has offset 4 */
+		if (dev_tipg < 8)
+			dev_tipg = 8;
+		if (dev_tipg >= 1024)
+			dev_tipg = 1023;
+		set_ipg(ifno, dev_tipg);
 
-		new_tipg -= 1;	/* loosely to set IPG against TX underrun */
-
-		if (new_tipg < 8)
-			new_tipg = 8;
-
-		if (new_tipg >= 1024)
-			new_tipg = 1023;
-
-		set_ipg(ifno, new_tipg);
-		update_transmit_max_sustained_pps(ifno, new_tipg + 5);
+		ipg = dev_tipg + 4;	/* restore offset */
+		update_transmit_max_sustained_pps(ifno, ipg);
 	} else if (strncmp(interface[ifno].ifname, "ix", 2) == 0) {
 		unsigned long bps;
 		uint32_t new_pap;
 		int error;
 
 		if (interface[ifno].transmit_pps == 0) {
-			new_tipg = INT_MAX;
+			dev_tipg = INT_MAX;
 		} else {
-			new_tipg =
+			dev_tipg =
 			    ((interface[ifno].maxlinkspeed / 8) / interface[ifno].transmit_pps) -
-			    PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE - DEFAULT_IFG);
+			    PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE, 0);
 		}
-		if (new_tipg < 5)
-			new_tipg = 5;
+		if (dev_tipg < 5)
+			dev_tipg = 5;
 
-		new_tipg -= 4;	/* ix(4) NIC, ipg has offset 4 */
+		dev_tipg -= 4;	/* ix(4) NIC, ipg has offset 4 */
+		if (dev_tipg >= 256)
+			dev_tipg = 255;
 
-		new_tipg -= 1;	/* loosely to set IPG against TX underrun */
-
-		if (new_tipg >= 256)
-			new_tipg = 255;
-
-		error = set_ipg(ifno, new_tipg);
+		error = set_ipg(ifno, dev_tipg);
 		if (error == 0) {
-			update_transmit_max_sustained_pps(ifno, new_tipg + 5);
+			ipg = dev_tipg + 4;	/* restore offset */
+			update_transmit_max_sustained_pps(ifno, ipg);
 			return;
 		}
 
@@ -708,7 +705,7 @@ calc_ipg(int ifno)
 		if (interface[ifno].transmit_pps == 0) {
 			bps = 0;
 		} else {
-			bps = PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE) * interface[ifno].transmit_pps * 8;
+			bps = PKTSIZE2FRAMESIZE(interface[ifno].pktsize + ETHHDRSIZE, DEFAULT_IFG) * interface[ifno].transmit_pps * 8;
 		}
 		/*  / 1000 / 1000; */
 
@@ -723,7 +720,8 @@ calc_ipg(int ifno)
 
 		error = set_pap(ifno, new_pap);
 		if (error == 0) {
-			update_transmit_max_sustained_pps(ifno, new_tipg + 5);
+			ipg = dev_tipg + 4;	/* restore offset */
+			update_transmit_max_sustained_pps(ifno, ipg);
 			return;
 		}
 	}
@@ -2805,12 +2803,14 @@ itemlist_callback_l1_l2(struct itemlist *itemlist, struct item *item, void *refp
 		opt_bps_include_preamble = 1;
 		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L1, "*");
 		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L2, NULL);
+		snprintf(bps_desc, sizeof(bps_desc), "(include PRE+FCS+IFG)");
 		break;
 
 	case ITEMLIST_ID_BUTTON_BPS_L2:
 		opt_bps_include_preamble = 0;
 		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L1, NULL);
 		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L2, "*");
+		snprintf(bps_desc, sizeof(bps_desc), "(include FCS)");
 		break;
 	}
 
@@ -2986,6 +2986,8 @@ control_init_items(struct itemlist *itemlist)
 	itemlist_register_item(itemlist, ITEMLIST_ID_OPT_NFLOW, itemlist_callback_nflow, &opt_nflow);
 	itemlist_register_item(itemlist, ITEMLIST_ID_BUTTON_BPS_L1, itemlist_callback_l1_l2, NULL);
 	itemlist_register_item(itemlist, ITEMLIST_ID_BUTTON_BPS_L2, itemlist_callback_l1_l2, NULL);
+	itemlist_register_item(itemlist, ITEMLIST_ID_BPS_DESC, NULL, bps_desc);
+
 	itemlist_register_item(itemlist, ITEMLIST_ID_BUTTON_BURST, itemlist_callback_burst_steady, NULL);
 	itemlist_register_item(itemlist, ITEMLIST_ID_BUTTON_STEADY, itemlist_callback_burst_steady, NULL);
 	itemlist_register_item(itemlist, ITEMLIST_ID_IF0_PKTSIZE, itemlist_callback_pktsize, &interface[0].pktsize);
@@ -3010,10 +3012,13 @@ control_init_items(struct itemlist *itemlist)
 	else
 		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BURST, "*");
 
-	if (opt_bps_include_preamble)
+	if (opt_bps_include_preamble) {
 		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L1, "*");
-	else
+		snprintf(bps_desc, sizeof(bps_desc), "(include PRE+FCS+IFG)");
+	} else {
 		itemlist_setvalue(itemlist, ITEMLIST_ID_BUTTON_BPS_L2, "*");
+		snprintf(bps_desc, sizeof(bps_desc), "(include FCS)");
+	}
 
 #ifdef IPG_HACK
 	if (support_ipg == 0) {
