@@ -313,7 +313,6 @@ struct interface {
 	struct sequencechecker *seqchecker_flowtotal;
 	struct sequencechecker **seqchecker_perflow;
 	struct sequence_table *seqtable;	/* sequence info recorder */
-	char *perflow_packet_template;
 
 	uint64_t sequence_tx;			/* transmit sequence number */
 	uint64_t *sequence_tx_perflow;		/* transmit sequence number per flow*/
