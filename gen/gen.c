@@ -3999,9 +3999,7 @@ main(int argc, char *argv[])
 	    opt_fulldup ? "<->" : "->",
 	    ifname[0]);
 
-
-printf("opt_bps_include_preamble=%d\n", opt_bps_include_preamble);
-
+	printf("opt_bps_include_preamble=%d\n", opt_bps_include_preamble);
 	printf("IP pktsize %d, %u pps, %.1f Mbps (%lu bps)\n", interface[0].pktsize, interface[0].transmit_pps,
 	    calc_mbps(interface[0].pktsize, interface[0].transmit_pps),
 	    (unsigned long)calc_bps(interface[0].pktsize, interface[0].transmit_pps));
