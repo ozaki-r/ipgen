@@ -1,4 +1,4 @@
-.include <../Makefile.inc>
+include ../Makefile.inc
 
 FILES=	default.css		\
 	index.html		\

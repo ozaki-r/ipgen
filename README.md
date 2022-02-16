@@ -25,24 +25,24 @@ It should work on recent Fedora Linux too with some minor tweaks.
 
 ## FreeBSD
 - setup FreeBSD and config kernel with NETMAP (add "device netmap" to conf/GENERIC).
-- perl and libevent are required to compile.
+- gmake, perl and libevent are required to compile.
 - checkout and build
 ```
 git clone git@github.com:iij/ipgen.git
 cd ipgen
-make depend && make && make install
+gmake depend && gmake && sudo gmake install
 ```
 - run ipgen
 
 ## Linux
-You will need bsd make and other libraries etc. See below.
+You will need libbsd and other libraries etc. See below.
 ```
-apt install bmake libbsd-dev clang libssl-dev libevent-dev libbpf-dev
+apt install libbsd-dev clang libssl-dev libevent-dev libbpf-dev
 git clone https://github.com/iij/ipgen.git
 cd ipgen
-bmake -m /usr/share/bmake/mk-netbsd CC=clang
+make depend && make && sudo make install
 ```
-- run gen/ipgen
+- run ipgen
 
 
 ## Caveat
