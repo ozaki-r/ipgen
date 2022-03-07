@@ -26,7 +26,7 @@
 #ifndef _ARPRESOLV_H_
 #define _ARPRESOLV_H_
 
-struct ether_addr *arpresolv(const char *, struct in_addr *, struct in_addr *);
-struct ether_addr *ndpresolv(const char *, struct in6_addr *, struct in6_addr *);
+struct ether_addr *arpresolv(const char *, int, struct in_addr *, struct in_addr *);
+struct ether_addr *ndpresolv(const char *, int, struct in6_addr *, struct in6_addr *);
 
 #endif /* _ARPRESOLV_H_ */

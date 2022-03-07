@@ -61,17 +61,15 @@
 
 #include "arpresolv.h"
 
-#undef DEBUG
-
 static int bpfread_and_exec(int (*)(void *, unsigned char *, int, const char *), void *, int, const char *, unsigned char *, int);
 
 static int bpfslot(void);
-static void arpquery(int, const char *, struct ether_addr *, struct in_addr *, struct in_addr *);
-static void ndsolicit(int, const char *, struct ether_addr *, struct in6_addr *, struct in6_addr *);
+static void arpquery(int, const char *, struct ether_addr *, int, struct in_addr *, struct in_addr *);
+static void ndsolicit(int, const char *, struct ether_addr *, int, struct in6_addr *, struct in6_addr *);
 static int bpfopen(const char *, int, unsigned int *);
 static void bpfclose(int);
-static int bpf_arpfilter(int);
-static int bpf_ndpfilter(int);
+static int bpf_arpfilter(int, int);
+static int bpf_ndpfilter(int, int);
 static int getifinfo(const char *, int *, uint8_t *);
 
 
@@ -128,6 +126,27 @@ struct bpf_insn arp_reply_filter[] = {
 	BPF_STMT(BPF_RET + BPF_K, 0),	/* return 0 */
 };
 
+
+#define VLAN_TAG_SIZE	4
+struct bpf_insn arp_reply_filter_vlan[] = {
+	/* check ethertype */
+	BPF_STMT(BPF_LD + BPF_H + BPF_ABS, ETHER_ADDR_LEN * 2 + VLAN_TAG_SIZE),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ETHERTYPE_ARP, 0, 5),
+
+	/* check ar_hrd == ARPHDR_ETHER && ar_pro == ETHERTYPE_IP */
+	BPF_STMT(BPF_LD + BPF_W + BPF_ABS, ETHER_HDR_LEN + VLAN_TAG_SIZE),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,
+	    (ARPHRD_ETHER << 16) + ETHERTYPE_IP, 0, 3),
+	/* check ar_hln, ar_pln, ar_op */
+	BPF_STMT(BPF_LD + BPF_W + BPF_ABS, ETHER_HDR_LEN + VLAN_TAG_SIZE + 4),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,
+	    (ETHER_ADDR_LEN << 24) + (sizeof(struct in_addr) << 16) +
+	    ARPOP_REPLY, 0, 1),
+
+	BPF_STMT(BPF_RET + BPF_K, -1),	/* return -1 */
+	BPF_STMT(BPF_RET + BPF_K, 0),	/* return 0 */
+};
+
 struct bpf_insn nd_filter[] = {
 	/* check ethertype */
 	BPF_STMT(BPF_LD + BPF_H + BPF_ABS, ETHER_ADDR_LEN * 2),
@@ -148,11 +167,31 @@ struct bpf_insn nd_filter[] = {
 	BPF_STMT(BPF_RET + BPF_K, 0),	/* return 0 (nomatch) */
 };
 
+struct bpf_insn nd_filter_vlan[] = {
+	/* check ethertype */
+	BPF_STMT(BPF_LD + BPF_H + BPF_ABS, ETHER_ADDR_LEN * 2 + VLAN_TAG_SIZE),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ETHERTYPE_IPV6, 0, 8),
+
+	/* fetch ip6_hdr->ip6_nxt */
+	BPF_STMT(BPF_LD + BPF_B + BPF_ABS, ETHER_HDR_LEN + 6),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, IPPROTO_ICMPV6, 0, 6),
+
+	/* fetch icmp6_hdr->icmp6_type */
+	BPF_STMT(BPF_LD + BPF_B + BPF_ABS, ETHER_HDR_LEN + VLAN_TAG_SIZE + sizeof(struct ip6_hdr)),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ND_ROUTER_SOLICIT, 3, 0),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ND_ROUTER_ADVERT, 2, 0),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ND_NEIGHBOR_SOLICIT, 1, 0),
+	BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ND_NEIGHBOR_ADVERT, 0, 1),
+
+	BPF_STMT(BPF_RET + BPF_K, -1),	/* return -1 (whole of packet) */
+	BPF_STMT(BPF_RET + BPF_K, 0),	/* return 0 (nomatch) */
+};
+
 #define BPFBUFSIZE	(1024 * 4)
 unsigned char bpfbuf[BPFBUFSIZE];
 unsigned int bpfbuflen = BPFBUFSIZE;
 
-#ifdef DEBUG
+#ifdef STANDALONE_TEST
 static int
 usage(void)
 {
@@ -257,9 +296,15 @@ main(int argc, char *argv[])
 	struct in6_addr src6, dst6;
 	struct ether_addr *eth;
 	char buf[INET6_ADDRSTRLEN];
+	int vlan;
 
-	if (argc != 3)
+	if (argc != 3 && argc != 4)
 		return usage();
+
+	vlan = 0;
+	if (argc == 4) {
+		vlan = strtol(argv[3], NULL, 10);
+	}
 
 	ifname = argv[1];
 	if (inet_pton(AF_INET, argv[2], &dst) == 1) {
@@ -269,7 +314,7 @@ main(int argc, char *argv[])
 			    ifname, inet_ntoa(dst));
 			return 3;
 		}
-		eth = arpresolv(ifname, &src, &dst);
+		eth = arpresolv(ifname, vlan, &src, &dst);
 	} else if (inet_pton(AF_INET6, argv[2], &dst6) == 1) {
 		rc = getaddr6(ifname, &dst6, &src6);
 		if (rc != 0) {
@@ -277,7 +322,7 @@ main(int argc, char *argv[])
 			    ifname, inet_ntop(AF_INET6, &dst6, buf, sizeof(buf)));
 			return 3;
 		}
-		eth = ndpresolv(ifname, &src6, &dst6);
+		eth = ndpresolv(ifname, vlan, &src6, &dst6);
 	} else {
 		printf("%s: invalid host\n", argv[2]);
 		return 2;
@@ -297,13 +342,18 @@ recv_arpreply(void *arg, unsigned char *buf, int buflen, const char *ifname)
 	struct arppkt *arppkt;
 	struct recvarp_arg *recvarparg;
 
-#ifdef DEBUG
+#ifdef STANDALONE_TEST
 	fprintf(stderr, "recv_arpreply: %s\n", ifname);
 	dumpstr((const char *)buf, buflen, 0);
 #endif
 
 	recvarparg = (struct recvarp_arg *)arg;
 	arppkt = (struct arppkt *)buf;
+
+	if (ntohs(arppkt->eheader.ether_type) == ETHERTYPE_VLAN) {
+		/* XXX: adjust for vlan. don't access arppkt->eheader anymore */
+		arppkt = (struct arppkt *)((char *)arppkt + 4);
+	}
 
 	if (arppkt->arp.ar_spa.s_addr != recvarparg->src.s_addr)
 		return 0;
@@ -319,13 +369,18 @@ recv_nd(void *arg, unsigned char *buf, int buflen, const char *ifname)
 	struct ndpkt *ndpkt;
 	struct recvnd_arg *recvndarg;
 
-#ifdef DEBUG
+#ifdef STANDALONE_TEST
 	fprintf(stderr, "recv_nd: %s\n", ifname);
 	dumpstr((const char *)buf, buflen, 0);
 #endif
 
 	recvndarg = (struct recvnd_arg *)arg;
 	ndpkt = (struct ndpkt *)buf;
+
+	if (ntohs(ndpkt->eheader.ether_type) == ETHERTYPE_VLAN) {
+		/* XXX: adjust for vlan. don't access arppkt->eheader anymore */
+		ndpkt = (struct ndpkt *)((char *)ndpkt + 4);
+	}
 
 	if (ndpkt->nd_icmp6.icmp6_type != ND_NEIGHBOR_ADVERT)
 		return 0;
@@ -336,7 +391,7 @@ recv_nd(void *arg, unsigned char *buf, int buflen, const char *ifname)
 }
 
 struct ether_addr *
-arpresolv(const char *ifname, struct in_addr *src, struct in_addr *dst)
+arpresolv(const char *ifname, int vlan, struct in_addr *src, struct in_addr *dst)
 {
 	fd_set rfd;
 	struct timespec end, lim, now;
@@ -353,7 +408,7 @@ arpresolv(const char *ifname, struct in_addr *src, struct in_addr *dst)
 		return NULL;
 	}
 
-	bpf_arpfilter(fd);
+	bpf_arpfilter(fd, vlan);
 
 	rc = getifinfo(ifname, &mtu, macaddr.ether_addr_octet);
 	if (rc != 0) {
@@ -362,7 +417,7 @@ arpresolv(const char *ifname, struct in_addr *src, struct in_addr *dst)
 	}
 
 	for (nretry = 3; nretry > 0; nretry--) {
-		arpquery(fd, ifname, &macaddr, src, dst);
+		arpquery(fd, ifname, &macaddr, vlan, src, dst);
 
 		lim.tv_sec = 1;
 		lim.tv_nsec = 0;
@@ -414,7 +469,7 @@ arpresolv(const char *ifname, struct in_addr *src, struct in_addr *dst)
 }
 
 struct ether_addr *
-ndpresolv(const char *ifname, struct in6_addr *src, struct in6_addr *dst)
+ndpresolv(const char *ifname, int vlan, struct in6_addr *src, struct in6_addr *dst)
 {
 	fd_set rfd;
 	struct timespec end, lim, now;
@@ -431,7 +486,7 @@ ndpresolv(const char *ifname, struct in6_addr *src, struct in6_addr *dst)
 		return NULL;
 	}
 
-	bpf_ndpfilter(fd);
+	bpf_ndpfilter(fd, vlan);
 
 	rc = getifinfo(ifname, &mtu, macaddr.ether_addr_octet);
 	if (rc != 0) {
@@ -440,7 +495,7 @@ ndpresolv(const char *ifname, struct in6_addr *src, struct in6_addr *dst)
 	}
 
 	for (nretry = 3; nretry > 0; nretry--) {
-		ndsolicit(fd, ifname, &macaddr, src, dst);
+		ndsolicit(fd, ifname, &macaddr, vlan, src, dst);
 
 		lim.tv_sec = 1;
 		lim.tv_nsec = 0;
@@ -513,19 +568,21 @@ bpfslot()
 }
 
 static int
-bpf_arpfilter(int fd)
+bpf_arpfilter(int fd, int vlan)
 {
 	struct bpf_program bpfprog;
 	int rc;
 
 	memset(&bpfprog, 0, sizeof(bpfprog));
-#ifdef nitems
-	bpfprog.bf_len = nitems(arp_reply_filter);
-#else
-	bpfprog.bf_len = __arraycount(arp_reply_filter);
-#endif
 
-	bpfprog.bf_insns = arp_reply_filter;
+	if (vlan) {
+		bpfprog.bf_len = nitems(arp_reply_filter_vlan);
+		bpfprog.bf_insns = arp_reply_filter_vlan;
+	} else {
+		bpfprog.bf_len = nitems(arp_reply_filter);
+		bpfprog.bf_insns = arp_reply_filter;
+	}
+
 	rc = ioctl(fd, BIOCSETF, &bpfprog);
 	if (rc != 0)
 		warn("ioctl: BIOCSETF (arp filter)");
@@ -534,19 +591,20 @@ bpf_arpfilter(int fd)
 }
 
 static int
-bpf_ndpfilter(int fd)
+bpf_ndpfilter(int fd, int vlan)
 {
 	struct bpf_program bpfprog;
 	int rc;
 
 	memset(&bpfprog, 0, sizeof(bpfprog));
-#ifdef nitems
-	bpfprog.bf_len = nitems(nd_filter);
-#else
-	bpfprog.bf_len = __arraycount(nd_filter);
-#endif
+	if (vlan) {
+		bpfprog.bf_len = nitems(nd_filter_vlan);
+		bpfprog.bf_insns = nd_filter_vlan;
+	} else {
+		bpfprog.bf_len = nitems(nd_filter);
+		bpfprog.bf_insns = nd_filter;
+	}
 
-	bpfprog.bf_insns = nd_filter;
 	rc = ioctl(fd, BIOCSETF, &bpfprog);
 	if (rc != 0)
 		warn("ioctl: BIOCSETF (ndp filter)");
@@ -688,8 +746,30 @@ getifinfo(const char *ifname, int *mtu, uint8_t *hwaddr)
 	return rc;
 }
 
+static char *
+vlanize_malloc(int vlan, const char *pkt, unsigned int pktsize)
+{
+	char *p = malloc(pktsize + 4);
+	struct ether_vlan_header *evl;
+
+	if (p != NULL) {
+		/* copy src/dst mac */
+		memcpy(p, pkt, 12);
+
+		/* insert vlan tag */
+		evl = (struct ether_vlan_header *)p;
+		evl->evl_encap_proto = htons(ETHERTYPE_VLAN);
+		evl->evl_tag = htons(vlan);
+
+		/* copy L2 payload */
+		memcpy(p + 16, pkt + 12, pktsize - 12);
+	}
+
+	return p;
+}
+
 static void
-arpquery(int fd, const char *ifname, struct ether_addr *sha, struct in_addr *src, struct in_addr *dst)
+arpquery(int fd, const char *ifname, struct ether_addr *sha, int vlan, struct in_addr *src, struct in_addr *dst)
 {
 	struct arppkt aquery;
 	static const uint8_t eth_broadcast[ETHER_ADDR_LEN] =
@@ -712,30 +792,42 @@ arpquery(int fd, const char *ifname, struct ether_addr *sha, struct in_addr *src
 	memcpy(&aquery.arp.ar_sha, sha->ether_addr_octet, ETHER_ADDR_LEN);
 	memcpy(&aquery.arp.ar_tpa, dst, sizeof(struct in_addr));
 
-#ifdef DEBUG
+#ifdef STANDALONE_TEST
 	fprintf(stderr, "send arp-query on %s\n", ifname);
 	dumpstr((const char *)&aquery, sizeof(aquery), 0);
 #endif
 
 	/* send an arp-query via bpf */
-	write(fd, &aquery, sizeof(aquery));
+	if (vlan) {
+		char *p = vlanize_malloc(vlan, (const char *)&aquery, sizeof(aquery));
+		write(fd, p, sizeof(aquery) + 4);
+		free(p);
+	} else {
+		write(fd, &aquery, sizeof(aquery));
+	}
 }
 
 static void
-ndsolicit(int fd, const char *ifname, struct ether_addr *sha, struct in6_addr *src, struct in6_addr *dst)
+ndsolicit(int fd, const char *ifname, struct ether_addr *sha, int vlan, struct in6_addr *src, struct in6_addr *dst)
 {
 	char pktbuf[LIBPKT_PKTBUFSIZE];
 	unsigned int pktlen;
 
 	pktlen = ip6pkt_neighbor_solicit(pktbuf, sha, src, dst);
 
-#ifdef DEBUG
+#ifdef STANDALONE_TEST
 	fprintf(stderr, "send nd-solicit on %s\n", ifname);
 	dumpstr((const char *)pktbuf, pktlen, 0);
 #endif
 
 	/* send an arp-query via bpf */
-	write(fd, pktbuf, pktlen);
+	if (vlan) {
+		char *p = vlanize_malloc(vlan, pktbuf, pktlen);
+		write(fd, p, pktlen + 4);
+		free(p);
+	} else {
+		write(fd, pktbuf, pktlen);
+	}
 }
 
 static int
@@ -761,6 +853,13 @@ bpfread_and_exec(int (*recvcallback)(void *, unsigned char *, int, const char *)
 			unsigned int perpacketsize =
 			    ((struct bpf_hdr*)p)->bh_hdrlen +
 			    ((struct bpf_hdr*)p)->bh_caplen;
+
+#ifdef STANDALONE_TEST
+			fprintf(stderr, "Received packet on %s\n", ifname);
+			dumpstr(
+			    (const char *)p + ((struct bpf_hdr*)p)->bh_hdrlen,
+			    ((struct bpf_hdr*)p)->bh_datalen, 0);
+#endif
 
 			rc = recvcallback(callbackarg,
 			    ((uint8_t *)p + ((struct bpf_hdr*)p)->bh_hdrlen),
