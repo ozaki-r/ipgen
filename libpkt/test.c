@@ -31,6 +31,10 @@
 #include <arpa/inet.h>
 #include "libpkt.h"
 
+#define L3OFFSET	sizeof(struct ether_header)
+
+
+
 int
 main(int argc, char *argv[])
 {
@@ -55,19 +59,19 @@ main(int argc, char *argv[])
 
 		len = ip4pkt_tcp_template(buf, 128);
 
-		ip4pkt_srcport(buf, 0);
+		ip4pkt_srcport(buf, L3OFFSET, 0);
 		tcpdumpfile_output(fd, buf, len);
-		if (ip4pkt_test_cksum(buf, sizeof(buf)) != 0)
+		if (ip4pkt_test_cksum(buf, L3OFFSET, sizeof(buf)) != 0)
 			fprintf(stderr, "cksum error\n");
 
-		ip4pkt_srcport(buf, 255);
+		ip4pkt_srcport(buf, L3OFFSET, 255);
 		tcpdumpfile_output(fd, buf, len);
-		if (ip4pkt_test_cksum(buf, sizeof(buf)) != 0)
+		if (ip4pkt_test_cksum(buf, L3OFFSET, sizeof(buf)) != 0)
 			fprintf(stderr, "cksum error\n");
 
-		ip4pkt_srcport(buf, 0);
+		ip4pkt_srcport(buf, L3OFFSET, 0);
 		tcpdumpfile_output(fd, buf, len);
-		if (ip4pkt_test_cksum(buf, sizeof(buf)) != 0)
+		if (ip4pkt_test_cksum(buf, L3OFFSET, sizeof(buf)) != 0)
 			fprintf(stderr, "cksum error\n");
 	}
 	exit(1);
@@ -83,10 +87,10 @@ main(int argc, char *argv[])
 
 		for (y = 0; y < 65536; y++) {
 			fprintf(stderr, "%d/%d\r", y, 65536);
-			ip4pkt_srcport(buf, y);
+			ip4pkt_srcport(buf, L3OFFSET, y);
 			for (x = 0; x < 65536; x++) {
-				ip4pkt_srcport(buf, x);
-				if (ip4pkt_test_cksum(buf, sizeof(buf)) != 0)
+				ip4pkt_srcport(buf, L3OFFSET, x);
+				if (ip4pkt_test_cksum(buf, L3OFFSET, sizeof(buf)) != 0)
 					fprintf(stderr, "cksum error\n");
 			}
 		}
@@ -98,14 +102,14 @@ main(int argc, char *argv[])
 #if 0
 	{
 		len = ip4pkt_icmp_template(buf, sizeof(buf));
-		ip4pkt_ttl(buf, 4);
-		ip4pkt_src(buf, inet_addr("10.0.0.2"));
-		ip4pkt_dst(buf, inet_addr("255.255.255.255"));
-		ip4pkt_dst(buf, inet_addr("0.0.0.0"));
-		ip4pkt_icmptype(buf, 8);
-		ip4pkt_icmpcode(buf, 1);
-		ip4pkt_icmpid(buf, 0x1234);
-		ip4pkt_icmpseq(buf, 0x5678);
+		ip4pkt_ttl(buf, L3OFFSET, 4);
+		ip4pkt_src(buf, L3OFFSET, inet_addr("10.0.0.2"));
+		ip4pkt_dst(buf, L3OFFSET, inet_addr("255.255.255.255"));
+		ip4pkt_dst(buf, L3OFFSET, inet_addr("0.0.0.0"));
+		ip4pkt_icmptype(buf, L3OFFSET, 8);
+		ip4pkt_icmpcode(buf, L3OFFSET, 1);
+		ip4pkt_icmpid(buf, L3OFFSET, 0x1234);
+		ip4pkt_icmpseq(buf, L3OFFSET, 0x5678);
 	}
 	tcpdumpfile_output(fd, buf, len);
 	tcpdumpfile_output(fd, buf, len);
@@ -116,22 +120,22 @@ main(int argc, char *argv[])
 #if 0
 	{
 		len = ip4pkt_tcp_template(buf, 58 + 14);
-		ip4pkt_src(buf, inet_addr("10.0.0.1"));
-		ip4pkt_dst(buf, inet_addr("10.1.0.1"));
-		ip4pkt_id(buf, 1);
-		ip4pkt_srcport(buf, 9);
-		ip4pkt_dstport(buf, 9);
-//		ip4pkt_tcpflags(buf, 0);
-//		ip4pkt_tcpseq(buf, 0);
-//		ip4pkt_tcpack(buf, 0);
-//		ip4pkt_tcpwin(buf, 0);
+		ip4pkt_src(buf, L3OFFSET, inet_addr("10.0.0.1"));
+		ip4pkt_dst(buf, L3OFFSET, inet_addr("10.1.0.1"));
+		ip4pkt_id(buf, L3OFFSET, 1);
+		ip4pkt_srcport(buf, L3OFFSET, 9);
+		ip4pkt_dstport(buf, L3OFFSET, 9);
+//		ip4pkt_tcpflags(buf, L3OFFSET, 0);
+//		ip4pkt_tcpseq(buf, L3OFFSET, 0);
+//		ip4pkt_tcpack(buf, L3OFFSET, 0);
+//		ip4pkt_tcpwin(buf, L3OFFSET, 0);
 
-//		ip4pkt_tcpflags(buf, 0x10);
-//		ip4pkt_tcpseq(buf, 10000001);
-//		ip4pkt_tcpack(buf, 99999999);
-//		ip4pkt_tcpwin(buf, 0x4444);
+//		ip4pkt_tcpflags(buf, L3OFFSET, 0x10);
+//		ip4pkt_tcpseq(buf, L3OFFSET, 10000001);
+//		ip4pkt_tcpack(buf, L3OFFSET, 99999999);
+//		ip4pkt_tcpwin(buf, L3OFFSET, 0x4444);
 
-//		ip4pkt_length(buf, 58);
+//		ip4pkt_length(buf, L3OFFSET, 58);
 
 #if 0
 		char x[] = {
@@ -139,7 +143,7 @@ main(int argc, char *argv[])
 			0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
 			0x00, 0x00
 		};
-		ip4pkt_writedata(buf, 0, x, sizeof(x));
+		ip4pkt_writedata(buf, L3OFFSET, 0, x, sizeof(x));
 #endif
 	}
 	tcpdumpfile_output(fd, buf, len);
@@ -149,25 +153,25 @@ main(int argc, char *argv[])
 #if 0
 	{
 		len = ip4pkt_udp_template(buf, sizeof(buf));
-		ip4pkt_src(buf, inet_addr("10.0.0.2"));
-		ip4pkt_dst(buf, inet_addr("255.255.255.255"));
-		ip4pkt_dst(buf, inet_addr("0.0.0.0"));
-		ip4pkt_srcport(buf, 1234);
-		ip4pkt_dstport(buf, 5678);
-		ip4pkt_length(buf, 65535);
-		ip4pkt_length(buf, 100);
+		ip4pkt_src(buf, L3OFFSET, inet_addr("10.0.0.2"));
+		ip4pkt_dst(buf, L3OFFSET, inet_addr("255.255.255.255"));
+		ip4pkt_dst(buf, L3OFFSET, inet_addr("0.0.0.0"));
+		ip4pkt_srcport(buf, L3OFFSET, 1234);
+		ip4pkt_dstport(buf, L3OFFSET, 5678);
+		ip4pkt_length(buf, L3OFFSET, 65535);
+		ip4pkt_length(buf, L3OFFSET, 100);
 
-		ip4pkt_tcpwin(buf, 0xb0);
-		ip4pkt_tcpwin(buf, 0);
+		ip4pkt_tcpwin(buf, L3OFFSET, 0xb0);
+		ip4pkt_tcpwin(buf, L3OFFSET, 0);
 
 //		char *x = "HELLO";
-//		ip4pkt_writedata(buf, 0, x, 5);
+//		ip4pkt_writedata(buf, L3OFFSET, 0, x, 5);
 
 #if 1
 		char *x = "\xff\xff\xff\xff\xff";
 		char *z = "\0\0\0\0\0";
-		ip4pkt_writedata(buf, 1, x, 5);
-//		ip4pkt_writedata(buf, 1, z, 4);
+		ip4pkt_writedata(buf, L3OFFSET, 1, x, 5);
+//		ip4pkt_writedata(buf, L3OFFSET, 1, z, 4);
 #endif
 	}
 
@@ -189,10 +193,10 @@ main(int argc, char *argv[])
 			addr.s6_addr[15] = i;
 
 			len = i;
-			ip6pkt_length(buf, len);
-			ip6pkt_src(buf, &addr);
-			ip6pkt_srcport(buf, i);
-			ip6pkt_dstport(buf, i);
+			ip6pkt_length(buf, L3OFFSET, len);
+			ip6pkt_src(buf, L3OFFSET, &addr);
+			ip6pkt_srcport(buf, L3OFFSET, i);
+			ip6pkt_dstport(buf, L3OFFSET, i);
 
 			tcpdumpfile_output(fd, buf, len + 14);
 		}

@@ -83,14 +83,14 @@ int
 ip6pkt_neighbor_solicit(char *buf, const struct ether_addr *sha, struct in6_addr *addr1, struct in6_addr *addr2)
 {
 	u_int8_t edst[ETHER_ADDR_LEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };	/* XXX: should to use multicast address */
-	struct ndpkt *ndpkt;
+	struct ndpkt_l2 *ndpkt;
 	unsigned int ip6len, protolen;
 	int len;
 	struct in6_addr daddr;
 
-	ndpkt = (struct ndpkt *)buf;
+	ndpkt = (struct ndpkt_l2 *)buf;
 
-	len = ip6pkt_icmp6_template(buf, sizeof(struct ndpkt));
+	len = ip6pkt_icmp6_template(buf, sizeof(struct ndpkt_l2));
 	ip6len = len - sizeof(struct ether_header);
 	protolen = ip6len - sizeof(struct ip6_hdr);
 
@@ -120,23 +120,16 @@ ip6pkt_neighbor_solicit(char *buf, const struct ether_addr *sha, struct in6_addr
 }
 
 int
-ip6pkt_neighbor_parse(char *buf, int *type, struct ether_addr *ha, struct in6_addr *src, struct in6_addr *tgt)
+ip6pkt_neighbor_parse(char *buf, int *type, struct in6_addr *src, struct in6_addr *tgt)
 {
-	struct ether_header *eh;
-	struct ip6_hdr *ip6;
-	struct icmp6_hdr *icmp6;
-	struct ndpkt *ndpkt;
+	struct ndpkt_l3 *ndpkt;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
-	icmp6 = (struct icmp6_hdr *)(ip6 + 1);
-	ndpkt = (struct ndpkt *)icmp6;
+	ndpkt = (struct ndpkt_l3 *)buf;
 
-	*type = icmp6->icmp6_type;
-	memcpy(ha, eh->ether_shost, ETHER_ADDR_LEN);
-	memcpy(src, &ip6->ip6_src, sizeof(struct in6_addr));
+	*type = ndpkt->nd_icmp6.icmp6_type;
+	memcpy(src, &ndpkt->ip6.ip6_src, sizeof(struct in6_addr));
 
-	switch (icmp6->icmp6_type) {
+	switch (ndpkt->nd_icmp6.icmp6_type) {
 	case ND_NEIGHBOR_SOLICIT:
 		memcpy(tgt, &ndpkt->nd_solicit.nd_ns_target, sizeof(struct in6_addr));
 		break;
@@ -156,40 +149,65 @@ ip6pkt_neighbor_parse(char *buf, int *type, struct ether_addr *ha, struct in6_ad
 int
 ip6pkt_neighbor_solicit_reply(char *buf, const char *solicitbuf, u_char *eaddr, struct in6_addr *addr)
 {
-	struct ndpkt *ndpkt, *ondpkt;
+	struct ether_header *oeheader;
+	struct ether_vlan_header *oevheader;
+	struct ndpkt_l3 *ondpkt_l3;
+	struct ndpkt_l2 *ndpkt_l2;
 	unsigned int ip6len, protolen;
 	int len;
 
-	ondpkt = (struct ndpkt *)solicitbuf;
-	ndpkt = (struct ndpkt *)buf;
+	oeheader = (struct ether_header *)solicitbuf;
+	ndpkt_l2 = (struct ndpkt_l2 *)buf;
 
-	len = ip6pkt_icmp6_template(buf, sizeof(struct ndpkt));
+	if (ntohs(oeheader->ether_type) == ETHERTYPE_VLAN) {
+		ondpkt_l3 = (struct ndpkt_l3 *)(solicitbuf + sizeof(struct ether_vlan_header));
+		oevheader = (struct ether_vlan_header *)oeheader;
+	} else {
+		ondpkt_l3 = (struct ndpkt_l3 *)(solicitbuf + sizeof(struct ether_header));
+		oevheader = NULL;
+	}
+
+
+	len = ip6pkt_icmp6_template(buf, sizeof(struct ndpkt_l2));
 	ip6len = len - sizeof(struct ether_header);
 	protolen = ip6len - sizeof(struct ip6_hdr);
 
 	ethpkt_src(buf, eaddr);
-	ethpkt_dst(buf, ondpkt->eheader.ether_shost);
+	ethpkt_dst(buf, oeheader->ether_shost);
 
-	if (IN6_IS_ADDR_MULTICAST(&ondpkt->ip6.ip6_dst))
-		ndpkt->ip6.ip6_src = ondpkt->nd_solicit.nd_ns_target;
+	if (IN6_IS_ADDR_MULTICAST(&ondpkt_l3->ip6.ip6_dst))
+		ndpkt_l2->ip6.ip6_src = ondpkt_l3->nd_solicit.nd_ns_target;
 	else
-		ndpkt->ip6.ip6_src = ondpkt->ip6.ip6_dst;
+		ndpkt_l2->ip6.ip6_src = ondpkt_l3->ip6.ip6_dst;
 
-	ndpkt->ip6.ip6_dst = ondpkt->ip6.ip6_src;
-	ndpkt->nd_icmp6.icmp6_type = ND_NEIGHBOR_ADVERT;
-	ndpkt->nd_icmp6.icmp6_data32[0] = 
+	ndpkt_l2->ip6.ip6_dst = ondpkt_l3->ip6.ip6_src;
+	ndpkt_l2->nd_icmp6.icmp6_type = ND_NEIGHBOR_ADVERT;
+	ndpkt_l2->nd_icmp6.icmp6_data32[0] = 
 	    ND_NA_FLAG_SOLICITED |
 	    ND_NA_FLAG_OVERRIDE;
 
-	memcpy(&ndpkt->opt[2], eaddr, ETHER_ADDR_LEN);
-	memcpy(&ndpkt->nd_advert.nd_na_target,
-	    &ondpkt->nd_solicit.nd_ns_target,
+	memcpy(&ndpkt_l2->opt[2], eaddr, ETHER_ADDR_LEN);
+	memcpy(&ndpkt_l2->nd_advert.nd_na_target,
+	    &ondpkt_l3->nd_solicit.nd_ns_target,
 	    sizeof(struct in6_addr));
-	ndpkt->opt[0] = 2;
-	ndpkt->opt[1] = 1;
+	ndpkt_l2->opt[0] = 2;
+	ndpkt_l2->opt[1] = 1;
 
-	ndpkt->nd_icmp6.icmp6_cksum = 0;
-	ndpkt->nd_icmp6.icmp6_cksum = in6_cksum(&ndpkt->ip6.ip6_src, &ndpkt->ip6.ip6_dst, ndpkt->ip6.ip6_nxt, (char *)&ndpkt->nd_icmp6, protolen);
+	ndpkt_l2->nd_icmp6.icmp6_cksum = 0;
+	ndpkt_l2->nd_icmp6.icmp6_cksum = in6_cksum(&ndpkt_l2->ip6.ip6_src, &ndpkt_l2->ip6.ip6_dst, ndpkt_l2->ip6.ip6_nxt, (char *)&ndpkt_l2->nd_icmp6, protolen);
+
+	if (oevheader != NULL) {
+		/* insert VLAN tag */
+		memmove(buf + sizeof(struct ether_vlan_header), buf + sizeof(struct ether_header),
+		    ip6len);
+
+		struct ether_vlan_header *evl = (struct ether_vlan_header *)buf;
+		evl->evl_encap_proto = htons(ETHERTYPE_VLAN);
+		evl->evl_tag = oevheader->evl_tag;
+		evl->evl_proto = htons(ETHERTYPE_IPV6);
+
+		return len + 4;
+	}
 
 	return len;
 }
@@ -225,35 +243,29 @@ ip6pkt_icmp6_template(char *buf, unsigned int framelen)
 }
 
 int
-ip6pkt_icmp6_echoreply(char *buf, const char *reqbuf, unsigned int framelen)
+ip6pkt_icmp6_echoreply(char *buf, unsigned int l3offset, const char *reqbuf, unsigned int framelen)
 {
-	struct ether_header *eh, *reh;
 	struct ip6_hdr *ip6, *rip6;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
-
-	reh = (struct ether_header *)reqbuf;
-	rip6 = (struct ip6_hdr *)(reh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
+	rip6 = (struct ip6_hdr *)(reqbuf + l3offset);
 
 	memcpy(buf, reqbuf, framelen);
 	memcpy(&ip6->ip6_src, &rip6->ip6_dst, sizeof(struct in6_addr));
 	memcpy(&ip6->ip6_dst, &rip6->ip6_src, sizeof(struct in6_addr));
-	ip6pkt_icmp6_type(buf, ICMP6_ECHO_REPLY);
+	ip6pkt_icmp6_type(buf, l3offset, ICMP6_ECHO_REPLY);
 
 	return framelen;
 }
 
 int
-ip6pkt_icmp6_type(char *buf, unsigned int type)
+ip6pkt_icmp6_type(char *buf, unsigned int l3offset, unsigned int type)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	struct icmp6_hdr *icmp6;
 	uint32_t sum;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -344,15 +356,13 @@ ip6pkt_tcp_template(char *buf, unsigned int framelen)
 }
 
 int
-ip6pkt_length(char *buf, unsigned int ip6len)
+ip6pkt_length(char *buf, unsigned int l3offset, unsigned int ip6len)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	uint32_t sum;
 	uint16_t oldlen;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -397,14 +407,12 @@ ip6pkt_length(char *buf, unsigned int ip6len)
  */
 #if 0
 int
-ip6pkt_off(char *buf, uint16_t off)
+ip6pkt_off(char *buf, unsigned int l3offset, uint16_t off)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 //	uint32_t sum;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 	(void)&ip6;
 
 //	if (ip->ip_v != IPVERSION)
@@ -422,13 +430,11 @@ ip6pkt_off(char *buf, uint16_t off)
 #endif
 
 int
-ip6pkt_flowinfo(char *buf, uint32_t flow)
+ip6pkt_flowinfo(char *buf, unsigned int l3offset, uint32_t flow)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -439,13 +445,11 @@ ip6pkt_flowinfo(char *buf, uint32_t flow)
 }
 
 int
-ip6pkt_ttl(char *buf, int ttl)
+ip6pkt_ttl(char *buf, unsigned int l3offset, int ttl)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -455,16 +459,14 @@ ip6pkt_ttl(char *buf, int ttl)
 }
 
 static int
-ip6pkt_srcdst(int srcdst, char *buf, const struct in6_addr *addr)
+ip6pkt_srcdst(int srcdst, char *buf, unsigned int l3offset, const struct in6_addr *addr)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	uint16_t *sump;
 	uint32_t sum;
 	struct in6_addr old;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -535,27 +537,25 @@ ip6pkt_srcdst(int srcdst, char *buf, const struct in6_addr *addr)
 }
 
 int
-ip6pkt_src(char *buf, const struct in6_addr *addr)
+ip6pkt_src(char *buf, unsigned int l3offset, const struct in6_addr *addr)
 {
-	return ip6pkt_srcdst(0, buf, addr);
+	return ip6pkt_srcdst(0, buf, l3offset, addr);
 }
 
 int
-ip6pkt_dst(char *buf, const struct in6_addr *addr)
+ip6pkt_dst(char *buf, unsigned int l3offset, const struct in6_addr *addr)
 {
-	return ip6pkt_srcdst(1, buf, addr);
+	return ip6pkt_srcdst(1, buf, l3offset, addr);
 }
 
 static inline int
-ip6pkt_srcdstport(int srcdst, char *buf, uint16_t port)
+ip6pkt_srcdstport(int srcdst, char *buf, unsigned int l3offset, uint16_t port)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	uint32_t sum;
 	uint16_t oldport;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -608,28 +608,26 @@ ip6pkt_srcdstport(int srcdst, char *buf, uint16_t port)
 }
 
 int
-ip6pkt_srcport(char *buf, uint16_t port)
+ip6pkt_srcport(char *buf, unsigned int l3offset, uint16_t port)
 {
-	return ip6pkt_srcdstport(0, buf, port);
+	return ip6pkt_srcdstport(0, buf, l3offset, port);
 }
 
 int
-ip6pkt_dstport(char *buf, uint16_t port)
+ip6pkt_dstport(char *buf, unsigned int l3offset, uint16_t port)
 {
-	return ip6pkt_srcdstport(1, buf, port);
+	return ip6pkt_srcdstport(1, buf, l3offset, port);
 }
 
 int
-ip6pkt_writedata(char *buf, unsigned int offset, char *data, unsigned int datalen)
+ip6pkt_writedata(char *buf, unsigned int l3offset, unsigned int offset, char *data, unsigned int datalen)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	uint16_t *sump;
 	char *datap;
 	uint32_t sum;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -704,14 +702,12 @@ ip6pkt_writedata(char *buf, unsigned int offset, char *data, unsigned int datale
 }
 
 int
-ip6pkt_readdata(char *buf, unsigned int offset, char *data, unsigned int datalen)
+ip6pkt_readdata(char *buf, unsigned int l3offset, unsigned int offset, char *data, unsigned int datalen)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	char *datap;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -746,14 +742,12 @@ ip6pkt_readdata(char *buf, unsigned int offset, char *data, unsigned int datalen
 }
 
 char *
-ip6pkt_getptr(char *buf, unsigned int offset)
+ip6pkt_getptr(char *buf, unsigned int l3offset, unsigned int offset)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	char *datap;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return NULL;
@@ -785,16 +779,14 @@ ip6pkt_getptr(char *buf, unsigned int offset)
 }
 
 int
-ip6pkt_icmp_uint8(char *buf, int icmpoffset, uint8_t data)
+ip6pkt_icmp_uint8(char *buf, unsigned int l3offset, int icmpoffset, uint8_t data)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	struct icmp6_hdr *icmp6;
 	uint32_t sum;
 	uint8_t olddata;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 	(void)&ip6;
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
@@ -828,16 +820,14 @@ ip6pkt_icmp_uint8(char *buf, int icmpoffset, uint8_t data)
 }
 
 int
-ip6pkt_icmp_uint16(char *buf, int icmpoffset, uint16_t data)
+ip6pkt_icmp_uint16(char *buf, unsigned int l3offset, int icmpoffset, uint16_t data)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	struct icmp6_hdr *icmp6;
 	uint32_t sum;
 	uint16_t olddata;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -856,40 +846,38 @@ ip6pkt_icmp_uint16(char *buf, int icmpoffset, uint16_t data)
 }
 
 int
-ip6pkt_icmptype(char *buf, uint8_t type)
+ip6pkt_icmptype(char *buf, unsigned int l3offset, uint8_t type)
 {
-	return ip6pkt_icmp_uint8(buf, offsetof(struct icmp6_hdr, icmp6_type), type);
+	return ip6pkt_icmp_uint8(buf, l3offset, offsetof(struct icmp6_hdr, icmp6_type), type);
 }
 
 int
-ip6pkt_icmpcode(char *buf, uint8_t code)
+ip6pkt_icmpcode(char *buf, unsigned int l3offset, uint8_t code)
 {
-	return ip6pkt_icmp_uint8(buf, offsetof(struct icmp6_hdr, icmp6_code), code);
+	return ip6pkt_icmp_uint8(buf, l3offset, offsetof(struct icmp6_hdr, icmp6_code), code);
 }
 
 int
-ip6pkt_icmpid(char *buf, uint16_t id)
+ip6pkt_icmpid(char *buf, unsigned int l3offset, uint16_t id)
 {
-	return ip6pkt_icmp_uint16(buf, offsetof(struct icmp6_hdr, icmp6_id), id);
+	return ip6pkt_icmp_uint16(buf, l3offset, offsetof(struct icmp6_hdr, icmp6_id), id);
 }
 
 int
-ip6pkt_icmpseq(char *buf, uint16_t seq)
+ip6pkt_icmpseq(char *buf, unsigned int l3offset, uint16_t seq)
 {
-	return ip6pkt_icmp_uint16(buf, offsetof(struct icmp6_hdr, icmp6_seq), seq);
+	return ip6pkt_icmp_uint16(buf, l3offset, offsetof(struct icmp6_hdr, icmp6_seq), seq);
 }
 
 //static int
-//ip6pkt_udp_uint16(char *buf, int udpoffset, uint16_t data)
+//ip6pkt_udp_uint16(char *buf, unsigned int l3offset, int udpoffset, uint16_t data)
 //{
-//	struct ether_header *eh;
 //	struct ip6_hdr *ip6;
 //	struct udphdr *udp;
 //	uint32_t sum;
 //	uint16_t old;
 //
-//	eh = (struct ether_header *)buf;
-//	ip6 = (struct ip6_hdr *)(eh + 1);
+//	ip6 = (struct ip6_hdr *)(buf + l3offset);
 //
 //	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 //		return -1;
@@ -913,16 +901,14 @@ ip6pkt_icmpseq(char *buf, uint16_t seq)
 //}
 
 static int
-ip6pkt_tcp_uint16(char *buf, int tcpoffset, uint16_t data)
+ip6pkt_tcp_uint16(char *buf, unsigned int l3offset, int tcpoffset, uint16_t data)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	struct tcphdr *tcp;
 	uint32_t sum;
 	uint16_t old;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -946,16 +932,14 @@ ip6pkt_tcp_uint16(char *buf, int tcpoffset, uint16_t data)
 }
 
 static int
-ip6pkt_tcp_uint32(char *buf, int tcpoffset, uint32_t data)
+ip6pkt_tcp_uint32(char *buf, unsigned int l3offset, int tcpoffset, uint32_t data)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	struct tcphdr *tcp;
 	uint32_t sum;
 	uint32_t old;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -981,28 +965,26 @@ ip6pkt_tcp_uint32(char *buf, int tcpoffset, uint32_t data)
 }
 
 int
-ip6pkt_tcpseq(char *buf, uint32_t seq)
+ip6pkt_tcpseq(char *buf, unsigned int l3offset, uint32_t seq)
 {
-	return ip6pkt_tcp_uint32(buf, offsetof(struct tcphdr, th_seq), seq);
+	return ip6pkt_tcp_uint32(buf, l3offset, offsetof(struct tcphdr, th_seq), seq);
 }
 
 int
-ip6pkt_tcpack(char *buf, uint32_t ack)
+ip6pkt_tcpack(char *buf, unsigned int l3offset, uint32_t ack)
 {
-	return ip6pkt_tcp_uint32(buf, offsetof(struct tcphdr, th_ack), ack);
+	return ip6pkt_tcp_uint32(buf, l3offset, offsetof(struct tcphdr, th_ack), ack);
 }
 
 int
-ip6pkt_tcpflags(char *buf, int flags)
+ip6pkt_tcpflags(char *buf, unsigned int l3offset, int flags)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	struct tcphdr *tcp;
 	uint32_t sum;
 	uint8_t oldflags;
 
-	eh = (struct ether_header *)buf;
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return -1;
@@ -1029,21 +1011,20 @@ ip6pkt_tcpflags(char *buf, int flags)
 }
 
 int
-ip6pkt_tcpwin(char *buf, uint16_t win)
+ip6pkt_tcpwin(char *buf, unsigned int l3offset, uint16_t win)
 {
-	return ip6pkt_tcp_uint16(buf, offsetof(struct tcphdr, th_win), win);
+	return ip6pkt_tcp_uint16(buf, l3offset, offsetof(struct tcphdr, th_win), win);
 }
 
 int
-ip6pkt_tcpurp(char *buf, uint16_t urp)
+ip6pkt_tcpurp(char *buf, unsigned int l3offset, uint16_t urp)
 {
-	return ip6pkt_tcp_uint16(buf, offsetof(struct tcphdr, th_urp), urp);
+	return ip6pkt_tcp_uint16(buf, l3offset, offsetof(struct tcphdr, th_urp), urp);
 }
 
 int
-ip6pkt_test_cksum(char *buf, unsigned int maxframelen)
+ip6pkt_test_cksum(char *buf, unsigned int l3offset, unsigned int maxframelen)
 {
-	struct ether_header *eh;
 	struct ip6_hdr *ip6;
 	struct icmp6_hdr *icmp6;
 	struct udphdr *udp;
@@ -1056,18 +1037,12 @@ ip6pkt_test_cksum(char *buf, unsigned int maxframelen)
 	}
 	maxframelen -= sizeof(struct ether_header);
 
-	eh = (struct ether_header *)buf;
-	if (eh->ether_type != htons(ETHERTYPE_IPV6)) {
-		fprintf(stderr, "ether header is not ETHERTYPE_IPV6\n");
-		return -0x0800;
-	}
-
 	if (maxframelen < sizeof(struct ip6_hdr)) {
 		fprintf(stderr, "packet buffer too short. cannot access IPv6 header\n");
 		return -1;
 	}
 
-	ip6 = (struct ip6_hdr *)(eh + 1);
+	ip6 = (struct ip6_hdr *)(buf + l3offset);
 
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION) {
 		fprintf(stderr, "no IPv6 header\n");

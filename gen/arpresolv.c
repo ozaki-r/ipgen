@@ -339,7 +339,7 @@ main(int argc, char *argv[])
 static int
 recv_arpreply(void *arg, unsigned char *buf, int buflen, const char *ifname)
 {
-	struct arppkt *arppkt;
+	struct arppkt_l2 *arppkt;
 	struct recvarp_arg *recvarparg;
 
 #ifdef STANDALONE_TEST
@@ -348,11 +348,11 @@ recv_arpreply(void *arg, unsigned char *buf, int buflen, const char *ifname)
 #endif
 
 	recvarparg = (struct recvarp_arg *)arg;
-	arppkt = (struct arppkt *)buf;
+	arppkt = (struct arppkt_l2 *)buf;
 
 	if (ntohs(arppkt->eheader.ether_type) == ETHERTYPE_VLAN) {
 		/* XXX: adjust for vlan. don't access arppkt->eheader anymore */
-		arppkt = (struct arppkt *)((char *)arppkt + 4);
+		arppkt = (struct arppkt_l2 *)((char *)arppkt + 4);
 	}
 
 	if (arppkt->arp.ar_spa.s_addr != recvarparg->src.s_addr)
@@ -366,7 +366,7 @@ recv_arpreply(void *arg, unsigned char *buf, int buflen, const char *ifname)
 static int
 recv_nd(void *arg, unsigned char *buf, int buflen, const char *ifname)
 {
-	struct ndpkt *ndpkt;
+	struct ndpkt_l2 *ndpkt_l2;
 	struct recvnd_arg *recvndarg;
 
 #ifdef STANDALONE_TEST
@@ -375,17 +375,17 @@ recv_nd(void *arg, unsigned char *buf, int buflen, const char *ifname)
 #endif
 
 	recvndarg = (struct recvnd_arg *)arg;
-	ndpkt = (struct ndpkt *)buf;
+	ndpkt_l2 = (struct ndpkt_l2 *)buf;
 
-	if (ntohs(ndpkt->eheader.ether_type) == ETHERTYPE_VLAN) {
-		/* XXX: adjust for vlan. don't access arppkt->eheader anymore */
-		ndpkt = (struct ndpkt *)((char *)ndpkt + 4);
+	if (ntohs(ndpkt_l2->eheader.ether_type) == ETHERTYPE_VLAN) {
+		/* XXX: adjust for vlan. don't access ndpkt->eheader anymore */
+		ndpkt_l2 = (struct ndpkt_l2 *)((char *)ndpkt_l2 + 4);
 	}
 
-	if (ndpkt->nd_icmp6.icmp6_type != ND_NEIGHBOR_ADVERT)
+	if (ndpkt_l2->nd_icmp6.icmp6_type != ND_NEIGHBOR_ADVERT)
 		return 0;
 
-	memcpy(&recvndarg->src_eaddr, &ndpkt->opt[2], sizeof(struct ether_addr));
+	memcpy(&recvndarg->src_eaddr, &ndpkt_l2->opt[2], sizeof(struct ether_addr));
 
 	return 1;
 }
@@ -771,7 +771,7 @@ vlanize_malloc(int vlan, const char *pkt, unsigned int pktsize)
 static void
 arpquery(int fd, const char *ifname, struct ether_addr *sha, int vlan, struct in_addr *src, struct in_addr *dst)
 {
-	struct arppkt aquery;
+	struct arppkt_l2 aquery;
 	static const uint8_t eth_broadcast[ETHER_ADDR_LEN] =
 	    { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 

@@ -44,9 +44,9 @@
 int
 ip4pkt_arpparse(char *buf, int *op, struct ether_addr *sha, in_addr_t *spa, in_addr_t *tpa)
 {
-	struct arppkt *arp;
+	struct arppkt_l3 *arp;
 
-	arp = (struct arppkt *)buf;
+	arp = (struct arppkt_l3 *)buf;
 
 	/* extract arp packet */
 	*op = ntohs(arp->arp.ar_op);
@@ -62,12 +62,12 @@ ip4pkt_arpquery(char *buf, const struct ether_addr *sha, in_addr_t spa, in_addr_
 {
 	static const uint8_t eth_broadcast[ETHER_ADDR_LEN] =
 	    { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-	struct arppkt *aquery;
+	struct arppkt_l2 *aquery;
 
-	aquery = (struct arppkt *)buf;
+	aquery = (struct arppkt_l2 *)buf;
 
 	/* build arp query packet */
-	memset(aquery, 0, sizeof(struct arppkt));
+	memset(aquery, 0, sizeof(*aquery));
 	memcpy(aquery->eheader.ether_dhost, eth_broadcast, ETHER_ADDR_LEN);
 	memcpy(aquery->eheader.ether_shost, sha, ETHER_ADDR_LEN);
 	aquery->eheader.ether_type = htons(ETHERTYPE_ARP);
@@ -80,23 +80,33 @@ ip4pkt_arpquery(char *buf, const struct ether_addr *sha, in_addr_t spa, in_addr_
 	aquery->arp.ar_spa.s_addr = spa;
 	aquery->arp.ar_tpa.s_addr = tpa;
 
-	return sizeof(struct arppkt);
+	return sizeof(*aquery);
 }
 
 int
 ip4pkt_arpreply(char *buf, const char *querybuf, u_char *eaddr, in_addr_t addr, in_addr_t mask)
 {
-	struct arppkt *aquery, *areply;
+	struct ether_header *eheader;
+	struct ether_vlan_header *evheader = NULL;
+	struct arppkt_l2 *aquery, *areply;
+	uint16_t etype;
 
-	aquery = (struct arppkt *)querybuf;
-	areply = (struct arppkt *)buf;
+	eheader = (struct ether_header *)querybuf;
+	aquery = (struct arppkt_l2 *)querybuf;
+	areply = (struct arppkt_l2 *)buf;
 
 	static const uint8_t eth_broadcast[ETHER_ADDR_LEN] =
 	    { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
+	etype = ntohs(eheader->ether_type);
+	if (etype == ETHERTYPE_VLAN) {
+		evheader = (struct ether_vlan_header *)eheader;
+		etype = ntohs(evheader->evl_proto);
+	}
+
 	/* checking destination ether addr is broadcast */
-	if ((ntohs(aquery->eheader.ether_type) != ETHERTYPE_ARP) ||
-	    (memcmp(aquery->eheader.ether_dhost, eth_broadcast, ETHER_ADDR_LEN) != 0) ||
+	if ((etype != ETHERTYPE_ARP) ||
+	    (memcmp(eheader->ether_dhost, eth_broadcast, ETHER_ADDR_LEN) != 0) ||
 	    (ntohs(aquery->arp.ar_hrd) != ARPHRD_ETHER) ||
 	    (ntohs(aquery->arp.ar_pro) != ETHERTYPE_IP) ||
 	    (aquery->arp.ar_hln != ETHER_ADDR_LEN) ||
@@ -106,7 +116,7 @@ ip4pkt_arpreply(char *buf, const char *querybuf, u_char *eaddr, in_addr_t addr, 
 		return -1;	/* not an arp request packet for me */
 
 	/* build arp reply packet */
-	memset(areply, 0, sizeof(struct arppkt));
+	memset(areply, 0, sizeof(*areply));
 	memcpy(areply->eheader.ether_dhost, aquery->arp.ar_sha, ETHER_ADDR_LEN);
 	memcpy(areply->eheader.ether_shost, eaddr, ETHER_ADDR_LEN);
 	areply->eheader.ether_type = htons(ETHERTYPE_ARP);
@@ -120,7 +130,20 @@ ip4pkt_arpreply(char *buf, const char *querybuf, u_char *eaddr, in_addr_t addr, 
 	memcpy(areply->arp.ar_tha, aquery->arp.ar_sha, ETHER_ADDR_LEN);
 	memcpy(&areply->arp.ar_tpa, &aquery->arp.ar_spa, sizeof(struct in_addr));
 
-	return sizeof(struct arppkt);
+	if (evheader != NULL) {
+		/* insert VLAN tag */
+		memmove(buf + sizeof(*evheader), buf + sizeof(*eheader),
+		    sizeof(struct arppkt_l3));
+
+		struct ether_vlan_header *evl = (struct ether_vlan_header *)buf;
+		evl->evl_encap_proto = htons(ETHERTYPE_VLAN);
+		evl->evl_tag = evheader->evl_tag;
+		evl->evl_proto = htons(ETHERTYPE_ARP);
+
+		return sizeof(*areply) + 4;
+	}
+
+	return sizeof(*areply);
 }
 
 int
@@ -159,36 +182,30 @@ ip4pkt_icmp_template(char *buf, unsigned int framelen)
 }
 
 int
-ip4pkt_icmp_echoreply(char *buf, const char *reqbuf, unsigned int framelen)
+ip4pkt_icmp_echoreply(char *buf, unsigned int l3offset, const char *reqbuf, unsigned int framelen)
 {
-	struct ether_header *eh, *reh;
 	struct ip *ip, *rip;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
-
-	reh = (struct ether_header *)reqbuf;
-	rip = (struct ip *)(reh + 1);
+	ip = (struct ip *)(buf + l3offset);
+	rip = (struct ip *)(reqbuf + l3offset);
 
 	memcpy(buf, reqbuf, framelen);
 	ip->ip_src = rip->ip_dst;
 	ip->ip_dst = rip->ip_src;
 
-	ip4pkt_icmp_type(buf, ICMP_ECHOREPLY);
+	ip4pkt_icmp_type(buf, l3offset, ICMP_ECHOREPLY);
 
 	return framelen;
 }
 
 int
-ip4pkt_icmp_type(char *buf, int type)
+ip4pkt_icmp_type(char *buf, unsigned int l3offset, int type)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	struct icmp *icmp;
 	uint32_t sum;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 
@@ -290,15 +307,13 @@ ip4pkt_tcp_template(char *buf, unsigned int framelen)
 }
 
 int
-ip4pkt_length(char *buf, unsigned int iplen)
+ip4pkt_length(char *buf, unsigned int l3offset, unsigned int iplen)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	uint32_t sum;
 	uint16_t oldlen;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 
@@ -346,14 +361,12 @@ ip4pkt_length(char *buf, unsigned int iplen)
 }
 
 int
-ip4pkt_off(char *buf, uint16_t off)
+ip4pkt_off(char *buf, unsigned int l3offset, uint16_t off)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	uint32_t sum;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 
@@ -368,14 +381,12 @@ ip4pkt_off(char *buf, uint16_t off)
 }
 
 int
-ip4pkt_id(char *buf, uint16_t id)
+ip4pkt_id(char *buf, unsigned int l3offset, uint16_t id)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	uint32_t sum;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 
@@ -390,14 +401,12 @@ ip4pkt_id(char *buf, uint16_t id)
 }
 
 int
-ip4pkt_ttl(char *buf, unsigned int ttl)
+ip4pkt_ttl(char *buf, unsigned int l3offset, unsigned int ttl)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	uint32_t sum;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 
@@ -416,15 +425,13 @@ ip4pkt_ttl(char *buf, unsigned int ttl)
 }
 
 static int
-ip4pkt_srcdst(int srcdst, char *buf, in_addr_t addr)
+ip4pkt_srcdst(int srcdst, char *buf, unsigned int l3offset, in_addr_t addr)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	uint32_t sum;
 	in_addr_t old;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 
@@ -466,27 +473,25 @@ ip4pkt_srcdst(int srcdst, char *buf, in_addr_t addr)
 }
 
 int
-ip4pkt_src(char *buf, in_addr_t addr)
+ip4pkt_src(char *buf, unsigned int l3offset, in_addr_t addr)
 {
-	return ip4pkt_srcdst(0, buf, addr);
+	return ip4pkt_srcdst(0, buf, l3offset, addr);
 }
 
 int
-ip4pkt_dst(char *buf, in_addr_t addr)
+ip4pkt_dst(char *buf, unsigned int l3offset, in_addr_t addr)
 {
-	return ip4pkt_srcdst(1, buf, addr);
+	return ip4pkt_srcdst(1, buf, l3offset, addr);
 }
 
 static inline int
-ip4pkt_srcdstport(int srcdst, char *buf, uint16_t port)
+ip4pkt_srcdstport(int srcdst, char *buf, unsigned int l3offset, uint16_t port)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	uint32_t sum;
 	uint16_t oldport;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 
@@ -528,28 +533,26 @@ ip4pkt_srcdstport(int srcdst, char *buf, uint16_t port)
 }
 
 int
-ip4pkt_srcport(char *buf, uint16_t port)
+ip4pkt_srcport(char *buf, unsigned int l3offset, uint16_t port)
 {
-	return ip4pkt_srcdstport(0, buf, port);
+	return ip4pkt_srcdstport(0, buf, l3offset, port);
 }
 
 int
-ip4pkt_dstport(char *buf, uint16_t port)
+ip4pkt_dstport(char *buf, unsigned int l3offset, uint16_t port)
 {
-	return ip4pkt_srcdstport(1, buf, port);
+	return ip4pkt_srcdstport(1, buf, l3offset, port);
 }
 
 int
-ip4pkt_writedata(char *buf, unsigned int offset, char *data, unsigned int datalen)
+ip4pkt_writedata(char *buf, unsigned int l3offset, unsigned int offset, char *data, unsigned int datalen)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	uint16_t *sump;
 	char *datap;
 	uint32_t sum;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	switch (ip->ip_p) {
 	case IPPROTO_UDP:
 		{
@@ -621,14 +624,12 @@ ip4pkt_writedata(char *buf, unsigned int offset, char *data, unsigned int datale
 }
 
 int
-ip4pkt_readdata(char *buf, unsigned int offset, char *data, unsigned int datalen)
+ip4pkt_readdata(char *buf, unsigned int l3offset, unsigned int offset, char *data, unsigned int datalen)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	char *datap;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	switch (ip->ip_p) {
 	case IPPROTO_UDP:
 		{
@@ -659,14 +660,12 @@ ip4pkt_readdata(char *buf, unsigned int offset, char *data, unsigned int datalen
 }
 
 char *
-ip4pkt_getptr(char *buf, unsigned int offset)
+ip4pkt_getptr(char *buf, unsigned int l3offset, unsigned int offset)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	char *datap;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	switch (ip->ip_p) {
 	case IPPROTO_UDP:
 		{
@@ -695,16 +694,14 @@ ip4pkt_getptr(char *buf, unsigned int offset)
 }
 
 int
-ip4pkt_icmp_uint8(char *buf, int icmpoffset, uint8_t data)
+ip4pkt_icmp_uint8(char *buf, unsigned int l3offset, int icmpoffset, uint8_t data)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	struct icmp *icmp;
 	uint32_t sum;
 	uint8_t olddata;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 	icmp = (struct icmp *)((char *)ip + ip->ip_hl * 4);
@@ -736,16 +733,14 @@ ip4pkt_icmp_uint8(char *buf, int icmpoffset, uint8_t data)
 }
 
 int
-ip4pkt_icmp_uint16(char *buf, int icmpoffset, uint16_t data)
+ip4pkt_icmp_uint16(char *buf, unsigned int l3offset, int icmpoffset, uint16_t data)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	struct icmp *icmp;
 	uint32_t sum;
 	uint16_t olddata;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 	icmp = (struct icmp *)((char *)ip + ip->ip_hl * 4);
@@ -763,27 +758,27 @@ ip4pkt_icmp_uint16(char *buf, int icmpoffset, uint16_t data)
 }
 
 int
-ip4pkt_icmptype(char *buf, uint8_t type)
+ip4pkt_icmptype(char *buf, unsigned int l3offset, uint8_t type)
 {
-	return ip4pkt_icmp_uint8(buf, offsetof(struct icmp, icmp_type), type);
+	return ip4pkt_icmp_uint8(buf, l3offset, offsetof(struct icmp, icmp_type), type);
 }
 
 int
-ip4pkt_icmpcode(char *buf, uint8_t code)
+ip4pkt_icmpcode(char *buf, unsigned int l3offset, uint8_t code)
 {
-	return ip4pkt_icmp_uint8(buf, offsetof(struct icmp, icmp_code), code);
+	return ip4pkt_icmp_uint8(buf, l3offset, offsetof(struct icmp, icmp_code), code);
 }
 
 int
-ip4pkt_icmpid(char *buf, uint16_t id)
+ip4pkt_icmpid(char *buf, unsigned int l3offset, uint16_t id)
 {
-	return ip4pkt_icmp_uint16(buf, offsetof(struct icmp, icmp_id), id);
+	return ip4pkt_icmp_uint16(buf, l3offset, offsetof(struct icmp, icmp_id), id);
 }
 
 int
-ip4pkt_icmpseq(char *buf, uint16_t seq)
+ip4pkt_icmpseq(char *buf, unsigned int l3offset, uint16_t seq)
 {
-	return ip4pkt_icmp_uint16(buf, offsetof(struct icmp, icmp_seq), seq);
+	return ip4pkt_icmp_uint16(buf, l3offset, offsetof(struct icmp, icmp_seq), seq);
 }
 
 //static int
@@ -817,16 +812,14 @@ ip4pkt_icmpseq(char *buf, uint16_t seq)
 //}
 
 static int
-ip4pkt_tcp_uint16(char *buf, int tcpoffset, uint16_t data)
+ip4pkt_tcp_uint16(char *buf, unsigned int l3offset, int tcpoffset, uint16_t data)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	struct tcphdr *tcp;
 	uint32_t sum;
 	uint16_t old;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 	if (ip->ip_p != IPPROTO_TCP)
@@ -847,16 +840,14 @@ ip4pkt_tcp_uint16(char *buf, int tcpoffset, uint16_t data)
 }
 
 static int
-ip4pkt_tcp_uint32(char *buf, int tcpoffset, uint32_t data)
+ip4pkt_tcp_uint32(char *buf, unsigned int l3offset, int tcpoffset, uint32_t data)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	struct tcphdr *tcp;
 	uint32_t sum;
 	uint32_t old;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 	if (ip->ip_p != IPPROTO_TCP)
@@ -879,28 +870,26 @@ ip4pkt_tcp_uint32(char *buf, int tcpoffset, uint32_t data)
 }
 
 int
-ip4pkt_tcpseq(char *buf, uint32_t seq)
+ip4pkt_tcpseq(char *buf, unsigned int l3offset, uint32_t seq)
 {
-	return ip4pkt_tcp_uint32(buf, offsetof(struct tcphdr, th_seq), seq);
+	return ip4pkt_tcp_uint32(buf, l3offset, offsetof(struct tcphdr, th_seq), seq);
 }
 
 int
-ip4pkt_tcpack(char *buf, uint32_t ack)
+ip4pkt_tcpack(char *buf, unsigned int l3offset, uint32_t ack)
 {
-	return ip4pkt_tcp_uint32(buf, offsetof(struct tcphdr, th_ack), ack);
+	return ip4pkt_tcp_uint32(buf, l3offset, offsetof(struct tcphdr, th_ack), ack);
 }
 
 int
-ip4pkt_tcpflags(char *buf, int flags)
+ip4pkt_tcpflags(char *buf, unsigned int l3offset, int flags)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	struct tcphdr *tcp;
 	uint32_t sum;
 	uint8_t oldflags;
 
-	eh = (struct ether_header *)buf;
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION)
 		return -1;
 	if (ip->ip_p != IPPROTO_TCP)
@@ -924,21 +913,20 @@ ip4pkt_tcpflags(char *buf, int flags)
 }
 
 int
-ip4pkt_tcpwin(char *buf, uint16_t win)
+ip4pkt_tcpwin(char *buf, unsigned int l3offset, uint16_t win)
 {
-	return ip4pkt_tcp_uint16(buf, offsetof(struct tcphdr, th_win), win);
+	return ip4pkt_tcp_uint16(buf, l3offset, offsetof(struct tcphdr, th_win), win);
 }
 
 int
-ip4pkt_tcpurp(char *buf, uint16_t urp)
+ip4pkt_tcpurp(char *buf, unsigned int l3offset, uint16_t urp)
 {
-	return ip4pkt_tcp_uint16(buf, offsetof(struct tcphdr, th_urp), urp);
+	return ip4pkt_tcp_uint16(buf, l3offset, offsetof(struct tcphdr, th_urp), urp);
 }
 
 int
-ip4pkt_test_cksum(char *buf, unsigned int maxframelen)
+ip4pkt_test_cksum(char *buf, unsigned int l3offset, unsigned int maxframelen)
 {
-	struct ether_header *eh;
 	struct ip *ip;
 	struct icmp *icmp;
 	struct udphdr *udp;
@@ -951,18 +939,12 @@ ip4pkt_test_cksum(char *buf, unsigned int maxframelen)
 	}
 	maxframelen -= sizeof(struct ether_header);
 
-	eh = (struct ether_header *)buf;
-	if (eh->ether_type != htons(ETHERTYPE_IP)) {
-		fprintf(stderr, "ether header is not ETHERTYPE_IP\n");
-		return -0x0800;
-	}
-
 	if (maxframelen < sizeof(struct ip)) {
 		fprintf(stderr, "packet buffer too short. cannot access IP header\n");
 		return -1;
 	}
 
-	ip = (struct ip *)(eh + 1);
+	ip = (struct ip *)(buf + l3offset);
 	if (ip->ip_v != IPVERSION) {
 		fprintf(stderr, "IP header is not IPv4\n");
 		return -1;

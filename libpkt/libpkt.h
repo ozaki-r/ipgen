@@ -48,9 +48,8 @@
 
 #define LIBPKT_PKTBUFSIZE	2048
 
-
 /* ethernet arp packet */
-struct arppkt {
+struct arppkt_l2 {
 	struct ether_header eheader;
 	struct {
 		uint16_t ar_hrd;			/* +0x00 */
@@ -66,17 +65,40 @@ struct arppkt {
 	} __packed arp;
 } __packed;
 
-struct ndpkt {
+/* without ether_header */
+struct arppkt_l3 {
+	struct {
+		uint16_t ar_hrd;			/* +0x00 */
+		uint16_t ar_pro;			/* +0x02 */
+		uint8_t ar_hln;				/* +0x04 */
+		uint8_t ar_pln;				/* +0x05 */
+		uint16_t ar_op;				/* +0x06 */
+		uint8_t ar_sha[ETHER_ADDR_LEN];		/* +0x08 */
+		struct in_addr ar_spa;			/* +0x0e */
+		uint8_t ar_tha[ETHER_ADDR_LEN];		/* +0x12 */
+		struct in_addr ar_tpa;			/* +0x18 */
+							/* +0x1c */
+	} __packed arp;
+} __packed;
+
+struct ndpkt_l2 {
 	struct ether_header eheader;
 	struct ip6_hdr ip6;
 	union {
 		struct icmp6_hdr nd_icmp6;
 		struct nd_neighbor_solicit nd_solicit;
 		struct nd_neighbor_advert nd_advert;
-	} nd;
-#define nd_solicit	nd.nd_solicit
-#define nd_advert	nd.nd_advert
-#define nd_icmp6	nd.nd_icmp6
+	};
+	uint8_t opt[8];
+} __packed;
+
+struct ndpkt_l3 {
+	struct ip6_hdr ip6;
+	union {
+		struct icmp6_hdr nd_icmp6;
+		struct nd_neighbor_solicit nd_solicit;
+		struct nd_neighbor_advert nd_advert;
+	};
 	uint8_t opt[8];
 } __packed;
 
@@ -114,72 +136,72 @@ int ip4pkt_arpparse(char *, int *, struct ether_addr *, in_addr_t *, in_addr_t *
 int ip4pkt_arpquery(char *, const struct ether_addr *, in_addr_t, in_addr_t);
 int ip4pkt_arpreply(char *, const char *, u_char *, in_addr_t, in_addr_t);
 int ip4pkt_icmp_template(char *, unsigned int);
-int ip4pkt_icmp_echoreply(char *, const char *, unsigned int);
-int ip4pkt_icmp_type(char *, int);
+int ip4pkt_icmp_echoreply(char *, unsigned int, const char *, unsigned int);
+int ip4pkt_icmp_type(char *, unsigned int, int);
 int ip4pkt_udp_template(char *, unsigned int);
 int ip4pkt_tcp_template(char *, unsigned int);
-int ip4pkt_length(char *, unsigned int);
-int ip4pkt_off(char *, uint16_t);
-int ip4pkt_id(char *, uint16_t);
-int ip4pkt_ttl(char *, unsigned int);
-int ip4pkt_src(char *, in_addr_t);
-int ip4pkt_dst(char *, in_addr_t);
-int ip4pkt_srcport(char *, uint16_t);
-int ip4pkt_dstport(char *, uint16_t);
-int ip4pkt_payload(char *, char *, unsigned int);
+int ip4pkt_length(char *, unsigned int, unsigned int);
+int ip4pkt_off(char *, unsigned int, uint16_t);
+int ip4pkt_id(char *, unsigned int, uint16_t);
+int ip4pkt_ttl(char *, unsigned int, unsigned int);
+int ip4pkt_src(char *, unsigned int, in_addr_t);
+int ip4pkt_dst(char *, unsigned int, in_addr_t);
+int ip4pkt_srcport(char *, unsigned int, uint16_t);
+int ip4pkt_dstport(char *, unsigned int, uint16_t);
+int ip4pkt_payload(char *, unsigned int, char *, unsigned int);
 
-int ip4pkt_icmptype(char *, uint8_t);
-int ip4pkt_icmpcode(char *, uint8_t);
-int ip4pkt_icmpid(char *, uint16_t);
-int ip4pkt_icmpseq(char *, uint16_t);
+int ip4pkt_icmptype(char *, unsigned int, uint8_t);
+int ip4pkt_icmpcode(char *, unsigned int, uint8_t);
+int ip4pkt_icmpid(char *, unsigned int, uint16_t);
+int ip4pkt_icmpseq(char *, unsigned int, uint16_t);
 
-int ip4pkt_tcpseq(char *, uint32_t);
-int ip4pkt_tcpack(char *, uint32_t);
-int ip4pkt_tcpflags(char *, int);
-int ip4pkt_tcpwin(char *, uint16_t);
-int ip4pkt_tcpurp(char *, uint16_t);
+int ip4pkt_tcpseq(char *, unsigned int, uint32_t);
+int ip4pkt_tcpack(char *, unsigned int, uint32_t);
+int ip4pkt_tcpflags(char *, unsigned int, int);
+int ip4pkt_tcpwin(char *, unsigned int, uint16_t);
+int ip4pkt_tcpurp(char *, unsigned int, uint16_t);
 
-int ip4pkt_writedata(char *, unsigned int, char *, unsigned int);
-int ip4pkt_readdata(char *, unsigned int, char *, unsigned int);
-char *ip4pkt_getptr(char *, unsigned int);
+int ip4pkt_writedata(char *, unsigned int, unsigned int, char *, unsigned int);
+int ip4pkt_readdata(char *, unsigned int, unsigned int, char *, unsigned int);
+char *ip4pkt_getptr(char *, unsigned int, unsigned int);
 
-int ip4pkt_test_cksum(char *, unsigned int);
+int ip4pkt_test_cksum(char *, unsigned int, unsigned int);
 
 /* ip6pkt.c */
-int ip6pkt_neighbor_parse(char *, int *, struct ether_addr *, struct in6_addr *, struct in6_addr *);
+int ip6pkt_neighbor_parse(char *, int *, struct in6_addr *, struct in6_addr *);
 int ip6pkt_neighbor_solicit(char *, const struct ether_addr *, struct in6_addr *, struct in6_addr *);
 int ip6pkt_neighbor_solicit_reply(char *, const char *, u_char *, struct in6_addr *);
 int ip6pkt_icmp6_template(char *, unsigned int);
-int ip6pkt_icmp6_echoreply(char *, const char *, unsigned int);
-int ip6pkt_icmp6_type(char *, unsigned int);
+int ip6pkt_icmp6_echoreply(char *, unsigned int, const char *, unsigned int);
+int ip6pkt_icmp6_type(char *, unsigned int, unsigned int);
 int ip6pkt_udp_template(char *, unsigned int);
 int ip6pkt_tcp_template(char *, unsigned int);
-int ip6pkt_length(char *, unsigned int);
-int ip6pkt_off(char *, uint16_t);
-int ip6pkt_flowinfo(char *, uint32_t);
-int ip6pkt_ttl(char *, int);
-int ip6pkt_src(char *, const struct in6_addr *);
-int ip6pkt_dst(char *, const struct in6_addr *);
-int ip6pkt_srcport(char *, uint16_t);
-int ip6pkt_dstport(char *, uint16_t);
-int ip6pkt_payload(char *, char *, unsigned int);
+int ip6pkt_length(char *, unsigned int, unsigned int);
+int ip6pkt_off(char *, unsigned int, uint16_t);
+int ip6pkt_flowinfo(char *, unsigned int, uint32_t);
+int ip6pkt_ttl(char *, unsigned int, int);
+int ip6pkt_src(char *, unsigned int, const struct in6_addr *);
+int ip6pkt_dst(char *, unsigned int, const struct in6_addr *);
+int ip6pkt_srcport(char *, unsigned int, uint16_t);
+int ip6pkt_dstport(char *, unsigned int, uint16_t);
+int ip6pkt_payload(char *, unsigned int, char *, unsigned int);
 
-int ip6pkt_icmptype(char *, uint8_t);
-int ip6pkt_icmpcode(char *, uint8_t);
-int ip6pkt_icmpid(char *, uint16_t);
-int ip6pkt_icmpseq(char *, uint16_t);
+int ip6pkt_icmptype(char *, unsigned int, uint8_t);
+int ip6pkt_icmpcode(char *, unsigned int, uint8_t);
+int ip6pkt_icmpid(char *, unsigned int, uint16_t);
+int ip6pkt_icmpseq(char *, unsigned int, uint16_t);
 
-int ip6pkt_tcpseq(char *, uint32_t);
-int ip6pkt_tcpack(char *, uint32_t);
-int ip6pkt_tcpflags(char *, int);
-int ip6pkt_tcpwin(char *, uint16_t);
-int ip6pkt_tcpurp(char *, uint16_t);
+int ip6pkt_tcpseq(char *, unsigned int, uint32_t);
+int ip6pkt_tcpack(char *, unsigned int, uint32_t);
+int ip6pkt_tcpflags(char *, unsigned int, int);
+int ip6pkt_tcpwin(char *, unsigned int, uint16_t);
+int ip6pkt_tcpurp(char *, unsigned int, uint16_t);
 
-int ip6pkt_writedata(char *, unsigned int, char *, unsigned int);
-int ip6pkt_readdata(char *, unsigned int, char *, unsigned int);
-char *ip6pkt_getptr(char *, unsigned int);
+int ip6pkt_writedata(char *, unsigned int, unsigned int, char *, unsigned int);
+int ip6pkt_readdata(char *, unsigned int, unsigned int, char *, unsigned int);
+char *ip6pkt_getptr(char *, unsigned int, unsigned int);
 
-int ip6pkt_test_cksum(char *, unsigned int);
+int ip6pkt_test_cksum(char *, unsigned int, unsigned int);
 
 
 /* debug */

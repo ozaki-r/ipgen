@@ -329,6 +329,7 @@ struct interface {
 
 	struct ether_addr eaddr;	/* my ethernet address */
 	struct ether_addr gweaddr;	/* gw ethernet address */
+	int vlan_id;			/* vlan id. 0-4095. used only for TX */
 	int af_addr;			/* AF_INET or AF_INET6 */
 	struct in_addr ipaddr;		/* my IP address */
 	struct in_addr ipaddr_mask;	/* my IP address mask */
@@ -370,14 +371,14 @@ build_template_packet_ipv4(int ifno, char *pkt)
 		/* for interface0 -> interface1 */
 		ethpkt_src(pkt, (u_char *)&interface[0].eaddr);
 		ethpkt_dst(pkt, (u_char *)&interface[0].gweaddr);
-		ip4pkt_src(pkt, interface[0].ipaddr.s_addr);
-		ip4pkt_dst(pkt, interface[1].ipaddr.s_addr);
+		ip4pkt_src(pkt, sizeof(struct ether_header), interface[0].ipaddr.s_addr);
+		ip4pkt_dst(pkt, sizeof(struct ether_header), interface[1].ipaddr.s_addr);
 	} else {
 		/* for interface1 -> interface0 */
 		ethpkt_src(pkt, (u_char *)&interface[1].eaddr);
 		ethpkt_dst(pkt, (u_char *)&interface[1].gweaddr);
-		ip4pkt_src(pkt, interface[1].ipaddr.s_addr);
-		ip4pkt_dst(pkt, interface[0].ipaddr.s_addr);
+		ip4pkt_src(pkt, sizeof(struct ether_header), interface[1].ipaddr.s_addr);
+		ip4pkt_dst(pkt, sizeof(struct ether_header), interface[0].ipaddr.s_addr);
 	}
 
 	return interface[ifno].pktsize;
@@ -390,14 +391,14 @@ build_template_packet_ipv6(int ifno, char *pkt)
 		/* for interface0 -> interface1 */
 		ethpkt_src(pkt, (u_char *)&interface[0].eaddr);
 		ethpkt_dst(pkt, (u_char *)&interface[0].gweaddr);
-		ip6pkt_src(pkt, &interface[0].ip6addr);
-		ip6pkt_dst(pkt, &interface[1].ip6addr);
+		ip6pkt_src(pkt, sizeof(struct ether_header), &interface[0].ip6addr);
+		ip6pkt_dst(pkt, sizeof(struct ether_header),  &interface[1].ip6addr);
 	} else {
 		/* for interface1 -> interface0 */
 		ethpkt_src(pkt, (u_char *)&interface[1].eaddr);
 		ethpkt_dst(pkt, (u_char *)&interface[1].gweaddr);
-		ip6pkt_src(pkt, &interface[1].ip6addr);
-		ip6pkt_dst(pkt, &interface[0].ip6addr);
+		ip6pkt_src(pkt, sizeof(struct ether_header), &interface[1].ip6addr);
+		ip6pkt_dst(pkt, sizeof(struct ether_header), &interface[0].ip6addr);
 	}
 
 	return interface[ifno].pktsize;
@@ -425,6 +426,22 @@ get_flownum(int ifno)
 	return addresslist_get_tuplenum(interface[ifno].adrlist);
 }
 
+/* dstbuf must be 4 bytes larger than the size of srcbuf  */
+static void
+pktcpy_vlan(char *dstbuf, char *srcbuf, unsigned int pktsize, int vlan)
+{
+	/* copy src/dst mac */
+	memcpy(dstbuf, srcbuf, 12);
+
+	/* insert vlan tag */
+	struct ether_vlan_header *evl = (struct ether_vlan_header *)dstbuf;
+	evl->evl_encap_proto = htons(ETHERTYPE_VLAN);
+	evl->evl_tag = htons(vlan);
+
+	/* copy original ethertype, and L2 payload */
+	memcpy(dstbuf + 12 + 4, srcbuf + 12, pktsize - 12);
+}
+
 void
 touchup_tx_packet(char *buf, int ifno)
 {
@@ -434,19 +451,25 @@ touchup_tx_packet(char *buf, int ifno)
 	const struct address_tuple *tuple;
 	int ipv6;
 	int ifno_another;
+	unsigned int l3offset;
 	struct sequence_record *seqrecord;
 
 	ifno_another = ifno ^ 1;
+
+	if (interface[ifno].vlan_id)
+		l3offset = sizeof(struct ether_vlan_header);
+	else
+		l3offset = sizeof(struct ether_header);
 
 	if (opt_gentest) {
 		/* for benchmark (with -X option) */
 		static uint32_t x = 0;
 
-		ip4pkt_src(buf, x);
-		ip4pkt_dst(buf, x);
-		ip4pkt_srcport(buf, x);
-		ip4pkt_dstport(buf, x);
-		ip4pkt_length(buf, interface[ifno].pktsize);
+		ip4pkt_src(buf, l3offset, x);
+		ip4pkt_dst(buf, l3offset, x);
+		ip4pkt_srcport(buf, l3offset, x);
+		ip4pkt_dstport(buf, l3offset, x);
+		ip4pkt_length(buf, l3offset, interface[ifno].pktsize);
 
 	} else {
 		flowid = addresslist_get_current_tupleid(interface[ifno].adrlist);
@@ -458,34 +481,48 @@ touchup_tx_packet(char *buf, int ifno)
 		addresslist_get_tuple_next(interface[ifno].adrlist);
 
 		if (tuple->saddr.af == AF_INET) {
-			if (opt_udp)
-				memcpy(buf, pktbuffer_ipv4_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
-			else
-				memcpy(buf, pktbuffer_ipv4_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
+			if (interface[ifno].vlan_id) {
+				if (opt_udp)
+					pktcpy_vlan(buf, pktbuffer_ipv4_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].vlan_id);
+				else
+					pktcpy_vlan(buf, pktbuffer_ipv4_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].vlan_id);
+			} else {
+				if (opt_udp)
+					memcpy(buf, pktbuffer_ipv4_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
+				else
+					memcpy(buf, pktbuffer_ipv4_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
+			}
 
-			ip4pkt_src(buf, tuple->saddr.a.addr4.s_addr);
-			ip4pkt_dst(buf, tuple->daddr.a.addr4.s_addr);
-			ip4pkt_srcport(buf, tuple->sport);
-			ip4pkt_dstport(buf, tuple->dport);
+			ip4pkt_src(buf, l3offset, tuple->saddr.a.addr4.s_addr);
+			ip4pkt_dst(buf, l3offset, tuple->daddr.a.addr4.s_addr);
+			ip4pkt_srcport(buf, l3offset, tuple->sport);
+			ip4pkt_dstport(buf, l3offset, tuple->dport);
 
-			ip4pkt_length(buf, interface[ifno].pktsize);
-			ip4pkt_id(buf, id++);
+			ip4pkt_length(buf, l3offset, interface[ifno].pktsize);
+			ip4pkt_id(buf, l3offset, id++);
 			if (opt_fragment)
-				ip4pkt_off(buf, 1200 | IP_MF);
+				ip4pkt_off(buf, l3offset, 1200 | IP_MF);
 
 			ipv6 = 0;
 		} else {
-			if (opt_udp)
-				memcpy(buf, pktbuffer_ipv6_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
-			else
-				memcpy(buf, pktbuffer_ipv6_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
+			if (interface[ifno].vlan_id) {
+				if (opt_udp)
+					pktcpy_vlan(buf, pktbuffer_ipv6_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].vlan_id);
+				else
+					pktcpy_vlan(buf, pktbuffer_ipv6_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].vlan_id);
+			} else {
+				if (opt_udp)
+					memcpy(buf, pktbuffer_ipv6_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
+				else
+					memcpy(buf, pktbuffer_ipv6_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
+			}
 
-			ip6pkt_src(buf, &tuple->saddr.a.addr6);
-			ip6pkt_dst(buf, &tuple->daddr.a.addr6);
-			ip6pkt_srcport(buf, tuple->sport);
-			ip6pkt_dstport(buf, tuple->dport);
+			ip6pkt_src(buf, l3offset, &tuple->saddr.a.addr6);
+			ip6pkt_dst(buf, l3offset, &tuple->daddr.a.addr6);
+			ip6pkt_srcport(buf, l3offset, tuple->sport);
+			ip6pkt_dstport(buf, l3offset, tuple->dport);
 
-			ip6pkt_length(buf, interface[ifno].pktsize);
+			ip6pkt_length(buf, l3offset, interface[ifno].pktsize);
 
 			ipv6 = 1;
 		}
@@ -505,9 +542,9 @@ touchup_tx_packet(char *buf, int ifno)
 
 
 		if (ipv6) 
-			ip6pkt_writedata(buf, 0, (char *)&seqdata, sizeof(seqdata));
+			ip6pkt_writedata(buf, l3offset, 0, (char *)&seqdata, sizeof(seqdata));
 		else
-			ip4pkt_writedata(buf, 0, (char *)&seqdata, sizeof(seqdata));
+			ip4pkt_writedata(buf, l3offset, 0, (char *)&seqdata, sizeof(seqdata));
 
 	}
 }
@@ -515,12 +552,14 @@ touchup_tx_packet(char *buf, int ifno)
 int
 packet_generator(char *buf, int ifno)
 {
+	int vlanadj = (interface[ifno].vlan_id == 0) ? 0 : 4;
+
 	touchup_tx_packet(buf, ifno);
 
 	if (opt_debug != NULL)
-		tcpdumpfile_output(debug_tcpdump_fd, buf, interface[ifno].pktsize + ETHHDRSIZE);
+		tcpdumpfile_output(debug_tcpdump_fd, buf, interface[ifno].pktsize + ETHHDRSIZE + vlanadj);
 
-	return interface[ifno].pktsize;
+	return interface[ifno].pktsize + vlanadj;
 }
 
 int
@@ -916,11 +955,11 @@ interface_setup(int ifno, const char *ifname)
 
 		switch (interface[ifno].af_gwaddr) {
 		case AF_INET:
-			mac = arpresolv(ifname, &interface[ifno].ipaddr, &interface[ifno].gwaddr);
+			mac = arpresolv(ifname, interface[ifno].vlan_id, &interface[ifno].ipaddr, &interface[ifno].gwaddr);
 			addrstr = ip4_sprintf(&interface[ifno].gwaddr);
 			break;
 		case AF_INET6:
-			mac = ndpresolv(ifname, &interface[ifno].ip6addr, &interface[ifno].gw6addr);
+			mac = ndpresolv(ifname, interface[ifno].vlan_id, &interface[ifno].ip6addr, &interface[ifno].gw6addr);
 			addrstr = ip6_sprintf(&interface[ifno].gw6addr);
 			break;
 		default:
@@ -1096,7 +1135,7 @@ interface_load_transmit_packet(int ifno, char *buf, uint16_t *lenp)
 }
 
 void
-icmpecho_handler(int ifno, char *pkt, int len)
+icmpecho_handler(int ifno, char *pkt, int len, int l3offset)
 {
 	struct pbuf *p;
 	int pktlen;
@@ -1105,7 +1144,7 @@ icmpecho_handler(int ifno, char *pkt, int len)
 	if (p == NULL) {
 		fprintf(stderr, "cannot allocate buffer for icmp request\n");
 	} else {
-		pktlen = ip4pkt_icmp_echoreply(p->data, pkt, len);
+		pktlen = ip4pkt_icmp_echoreply(p->data, l3offset, pkt, len);
 		if (pktlen > 0) {
 			ethpkt_src(p->data, (u_char *)&interface[ifno].eaddr);
 			ethpkt_dst(p->data, (u_char *)&interface[ifno].gweaddr);
@@ -1118,14 +1157,14 @@ icmpecho_handler(int ifno, char *pkt, int len)
 }
 
 void
-arp_handler(int ifno, char *pkt)
+arp_handler(int ifno, char *pkt, int l3offset)
 {
 	int pktlen;
 	struct ether_addr eaddr;
 	struct in_addr spa, tpa;
 	int op;
 
-	ip4pkt_arpparse(pkt, &op, &eaddr, &spa.s_addr, &tpa.s_addr);
+	ip4pkt_arpparse(pkt + l3offset, &op, &eaddr, &spa.s_addr, &tpa.s_addr);
 	if (op == ARPOP_REPLY) {
 		/* ignore arp reply */
 		return;
@@ -1167,14 +1206,13 @@ arp_handler(int ifno, char *pkt)
 }
 
 void
-ndp_handler(int ifno, char *pkt)
+ndp_handler(int ifno, char *pkt, int l3offset)
 {
 	int pktlen;
-	struct ether_addr eaddr;
 	struct in6_addr src, target;
 	int type;
 
-	ip6pkt_neighbor_parse(pkt, &type, &eaddr, &src, &target);
+	ip6pkt_neighbor_parse(pkt + l3offset, &type, &src, &target);
 
 	/* must to reply neighbor-advertize */
 	if (type == ND_NEIGHBOR_SOLICIT) {
@@ -1219,6 +1257,8 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 	struct ip6_hdr *ip6;
 	struct udphdr *udp = NULL;
 	struct tcphdr *tcp = NULL;
+	int l3_offset;
+	uint16_t type;
 
 	interface[ifno].counter.rx++;
 	if (opt_bps_include_preamble)
@@ -1226,15 +1266,24 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 	else
 		interface[ifno].counter.rx_byte += len + FCS;
 
-	/* ignore FLOWCONTROL */
 	eth = (struct ether_header *)buf;
-	switch (ntohs(eth->ether_type)) {
+	type = ntohs(eth->ether_type);
+	if (type == ETHERTYPE_VLAN) {
+		struct ether_vlan_header *vlan = (struct ether_vlan_header *)buf;
+		type = ntohs(vlan->evl_proto);
+		l3_offset = sizeof(struct ether_vlan_header);
+	} else {
+		l3_offset = sizeof(struct ether_header);
+	}
+
+	switch (type) {
 	case ETHERTYPE_FLOWCONTROL:
+		/* ignore FLOWCONTROL */
 		interface[ifno].counter.rx_flow++;
 		return;
 	case ETHERTYPE_ARP:
 		interface[ifno].counter.rx_arp++;
-		arp_handler(ifno, buf);
+		arp_handler(ifno, buf, l3_offset);
 		return;
 	case ETHERTYPE_IP:
 		is_ipv6 = 0;
@@ -1251,10 +1300,9 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 		return;
 	}
 
-
 	if (is_ipv6) {
 		/* IPv6 packet */
-		ip6 = (struct ip6_hdr *)(eth + 1);
+		ip6 = (struct ip6_hdr *)(buf + l3_offset);
 		if (ip6->ip6_nxt == IPPROTO_ICMPV6) {
 			struct icmp6_hdr *icmp6 = (struct icmp6_hdr *)(ip6 + 1);	/* XXX: no support extension header */
 
@@ -1270,13 +1318,13 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 			case ICMP6_ECHO_REQUEST:
 				interface[ifno].counter.rx_icmpecho++;
 #if NOTYET
-				icmp6echo_handler(ifno, buf, len);
+				icmp6echo_handler(ifno, buf, len, l3_offset);
 #endif
 				return;
 
 			case ND_NEIGHBOR_SOLICIT:
 				interface[ifno].counter.rx_arp++;
-				ndp_handler(ifno, buf);
+				ndp_handler(ifno, buf, l3_offset);
 				return;
 
 			default:
@@ -1303,7 +1351,7 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 
 	} else {
 		/* IPv4 packet */
-		ip = (struct ip *)(eth + 1);
+		ip = (struct ip *)(buf + l3_offset);
 		if (ip->ip_p == IPPROTO_ICMP) {
 			struct icmp *icmp = (struct icmp *)((char *)ip + ip->ip_hl * 4);
 
@@ -1318,12 +1366,12 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 				return;
 			case ICMP_ECHO:
 				interface[ifno].counter.rx_icmpecho++;
-				icmpecho_handler(ifno, buf, len);
+				icmpecho_handler(ifno, buf, len, l3_offset);
 				return;
 			default:
 				interface[ifno].counter.rx_icmpother++;
-				printf("icmp receive: type=%d, code=%d\n",
-				    icmp->icmp_type, icmp->icmp_code);
+				printf("icmp receive: type=%d, code=%d, l3offset=%d\n",
+				    icmp->icmp_type, icmp->icmp_code, l3_offset);
 				return;
 			}
 		}
@@ -1353,9 +1401,9 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 		double latency;
 
 		if (is_ipv6)
-			seqdata = (struct seqdata *)ip6pkt_getptr(buf, 0);
+			seqdata = (struct seqdata *)ip6pkt_getptr(buf, l3_offset, 0);
 		else
-			seqdata = (struct seqdata *)ip4pkt_getptr(buf, 0);
+			seqdata = (struct seqdata *)ip4pkt_getptr(buf, l3_offset, 0);
 
 		if (seqdata->magic != seq_magic) {
 			/* no ipgen packet? */
@@ -1871,8 +1919,11 @@ usage(void)
 	fprintf(stderr,
 	       "\n"
 	       "usage: ipgen [options]\n"
+	       "	[-V <vlanid>]\n"
 	       "	-R <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n"
 	       "					set RX interface\n"
+	       "\n"
+	       "	[-V <vlanid>]\n"
 	       "	-T <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n"
 	       "					set TX interface\n"
 	       "\n"
@@ -3163,7 +3214,7 @@ gentest_main(void)
 		if (opt_gentest >= 2)
 			memcpy(tmppktbuf, pktbuffer_ipv4_udp[0], interface[0].pktsize + ETHHDRSIZE);
 		if (opt_gentest >= 3)
-			ip4pkt_test_cksum(tmppktbuf, interface[0].pktsize + ETHHDRSIZE);
+			ip4pkt_test_cksum(tmppktbuf, sizeof(struct ether_header), interface[0].pktsize + ETHHDRSIZE);
 
 		npkt++;
 		if (lastsec != currenttime_main.tv_sec) {
@@ -3221,6 +3272,7 @@ main(int argc, char *argv[])
 	int ch, optidx;
 	int pps;
 	int rc;
+	int vlan = 0;
 	char ifname[2][IFNAMSIZ];
 	char drvname[2][IFNAMSIZ];
 	unsigned long unit[2];
@@ -3247,13 +3299,21 @@ main(int argc, char *argv[])
 		interface[i].pktsize = min_pktsize;
 	}
 
-	while ((ch = getopt_long(argc, argv, "D:dF:fH:L:n:p:R:S:s:T:tvX", longopts, &optidx)) != -1) {
+	while ((ch = getopt_long(argc, argv, "D:dF:fH:L:n:p:R:S:s:T:tvV:X", longopts, &optidx)) != -1) {
 		switch (ch) {
 		case 'd':
 			opt_debuglevel++;
 			break;
 		case 'D':
 			opt_debug = optarg;
+			break;
+
+		case 'V':
+			vlan = strtol(optarg, (char **)NULL, 10);
+			if (vlan < 0 || vlan >= 4096) {
+				fprintf(stderr, "illegal vlan id: %s\n", optarg);
+				usage();
+			}
 			break;
 
 		case 'T':
@@ -3265,6 +3325,8 @@ main(int argc, char *argv[])
 				ifno = (ch == 'T') ? 1 : 0;
 				tofree = s = strdup(optarg);
 
+				interface[ifno].vlan_id = vlan;
+				vlan = 0;
 
 				/*
 				 * parse
