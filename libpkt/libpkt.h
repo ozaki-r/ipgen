@@ -43,6 +43,13 @@
 #elif defined(__linux__)
 #include <net/ethernet.h>
 #define __packed	__attribute__((__packed__))
+struct ether_vlan_header {
+	uint8_t evl_dhost[ETHER_ADDR_LEN];
+	uint8_t evl_shost[ETHER_ADDR_LEN];
+	uint16_t evl_encap_proto;
+	uint16_t evl_tag;
+	uint16_t evl_proto;
+} __packed;
 #endif
 #include <stdio.h>
 
