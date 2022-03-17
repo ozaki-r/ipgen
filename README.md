@@ -37,7 +37,7 @@ gmake depend && gmake && sudo gmake install
 ## Linux
 You will need libbsd and other libraries etc. See below.
 ```
-apt install libbsd-dev clang libssl-dev libevent-dev libbpf-dev
+apt install libbsd-dev clang libssl-dev libevent-dev libbpf-dev bmake
 git clone https://github.com/iij/ipgen.git
 cd ipgen
 make depend && make && sudo make install
