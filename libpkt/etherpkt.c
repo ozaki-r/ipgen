@@ -57,7 +57,7 @@ ethpkt_type(char *buf, u_short type)
 	struct ether_header *eh;
 
 	eh = (struct ether_header *)buf;
-	eh->ether_type = type;
+	eh->ether_type = htons(type);
 	return 0;
 }
 
