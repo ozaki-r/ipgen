@@ -109,6 +109,72 @@ struct ndpkt_l3 {
 	uint8_t opt[8];
 } __packed;
 
+/* pppoe packet */
+struct pppoe_l2 {
+	struct ether_header eheader;
+	struct {
+		uint8_t vertype;
+#define PPPOE_VERTYPE	0x11
+		uint8_t code;
+#define PPPOE_CODE_PADI	0x09
+#define PPPOE_CODE_PADO	0x07
+#define PPPOE_CODE_PADR	0x19
+#define PPPOE_CODE_PADS	0x65
+#define PPPOE_CODE_PADT	0xa7
+		uint16_t session;
+		uint16_t plen;
+	} __packed pppoe;
+	/* struct pppoetag[], or struct pppoelcp follow here... */
+} __packed;
+
+struct pppoetag {
+	uint16_t tag;
+#define PPPOE_TAG_EOL		0x0000
+#define PPPOE_TAG_SNAME		0x0101
+#define PPPOE_TAG_ACNAME	0x0102
+#define PPPOE_TAG_HUNIQUE	0x0103
+#define PPPOE_TAG_ACCOOKIE	0x0104
+#define PPPOE_TAG_VENDOR	0x0105
+#define PPPOE_TAG_RELAYSID	0x0110
+#define PPPOE_TAG_MAX_PAYLOAD	0x0120
+#define PPPOE_TAG_SNAME_ERR	0x0201
+#define PPPOE_TAG_ACSYS_ERR	0x0202
+#define PPPOE_TAG_GENERIC_ERR	0x0203
+	uint16_t len;
+} __packed;
+
+struct pppoeppp {
+	uint16_t protocol;
+#define PPP_IP		0x0021
+#define PPP_IPV6	0x0057
+#define PPP_IPCP	0x8021
+#define PPP_IPV6CP	0x8057
+#define PPP_LCP		0xc021
+#define PPP_PAP		0xc023
+#define PPP_CHAP	0xc223
+	union {
+		struct {
+			uint8_t type;
+#define CONF_REQ	1
+#define CONF_ACK	2
+#define CONF_NAK	3
+#define CONF_REJ	4
+#define TERM_REQ	5
+#define TERM_ACK	6
+#define CODE_REJ	7
+#define PROTO_REJ	8
+#define ECHO_REQ	9
+#define ECHO_REPLY	10
+#define DISC_REQ	11
+			uint8_t id;
+			uint16_t len;
+			uint8_t data[];
+		} lcp;
+	} __packed;
+} __packed;
+
+
+
 static inline unsigned int align(unsigned int n, unsigned int a)
 {
 	return (n + a - 1) & (-a);
