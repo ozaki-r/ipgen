@@ -188,8 +188,8 @@ struct bpf_insn nd_filter_vlan[] = {
 };
 
 #define BPFBUFSIZE	(1024 * 4)
-unsigned char bpfbuf[BPFBUFSIZE];
-unsigned int bpfbuflen = BPFBUFSIZE;
+static unsigned char bpfbuf[BPFBUFSIZE];
+static unsigned int bpfbuflen = BPFBUFSIZE;
 
 #ifdef STANDALONE_TEST
 static int
