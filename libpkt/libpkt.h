@@ -166,14 +166,30 @@ struct pppoeppp {
 #define ECHO_REQ	9
 #define ECHO_REPLY	10
 #define DISC_REQ	11
+#define PAP_REQ		1
+#define PAP_ACK		2
+#define PAP_NAK		3
+#define CHAP_CHALLENGE	1
+#define CHAP_RESPONSE	2
+#define CHAP_SUCCESS	3
+#define CHAP_FAILURE	4
+
 			uint8_t id;
 			uint16_t len;
 			uint8_t data[];
-		} lcp;
+#define LCP_OPT_MRU		1
+#define LCP_OPT_AUTH_PROTO	3
+#define LCP_OPT_MAGIC		5
+
+#define IPCP_OPT_ADDRESS	3
+
+#define CHAP_CHALLENGE		1
+#define CHAP_RESPONSE		2
+#define CHAP_SUCCESS		3
+#define CHAP_FAILURE		4
+		} ppp;
 	} __packed;
 } __packed;
-
-
 
 static inline unsigned int align(unsigned int n, unsigned int a)
 {
@@ -203,6 +219,17 @@ int ethpkt_template(char *, unsigned int);
 int ethpkt_type(char *, u_short);
 int ethpkt_src(char *, u_char *);
 int ethpkt_dst(char *, u_char *);
+
+/* pppoepkt.c */
+int pppoepkt_template(char *);
+int pppoepkt_code(char *, uint8_t);
+int pppoepkt_session(char *, uint16_t);
+int pppoepkt_length(char *, uint16_t);
+int pppoepkt_tag_extract(char *, uint16_t, void *, uint16_t *);
+int pppoepkt_tag_add(char *, uint16_t, void *, uint16_t);
+int pppoepkt_ppp_set(char *, uint16_t, uint8_t, uint8_t);
+int pppoepkt_ppp_extract_data(char *, int, void *, int);
+int pppoepkt_ppp_add_data(char *, void *, uint16_t);
 
 /* ip4pkt.c */
 int ip4pkt_arpparse(char *, int *, struct ether_addr *, in_addr_t *, in_addr_t *);

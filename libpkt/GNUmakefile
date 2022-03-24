@@ -3,6 +3,7 @@ TARGETLIB=	libpkt.a
 
 SRCS+=		dumpstr.c
 SRCS+=		etherpkt.c
+SRCS+=		pppoepkt.c
 SRCS+=		ip4pkt.c
 SRCS+=		ip6pkt.c
 SRCS+=		utils.c
