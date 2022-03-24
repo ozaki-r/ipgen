@@ -26,18 +26,6 @@
 #include "libpkt.h"
 
 #include <string.h>
-#include <netinet/ip.h>
-#include <netinet/udp.h>
-#include <netinet/tcp.h>
-#include <net/if.h>
-#ifdef __NetBSD__
-#include <net/if_ether.h>
-#elif defined(__OpenBSD__)
-#include <netinet/if_ether.h>
-#elif defined(__FreeBSD__)
-#include <net/ethernet.h>
-#define ether_addr_octet octet
-#endif
 
 int
 ethpkt_template(char *buf, unsigned int framelen)
