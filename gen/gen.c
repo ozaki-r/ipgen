@@ -42,6 +42,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/random.h>
 #include <net/if.h>
 #ifdef USE_NETMAP
 #include <net/netmap.h>
@@ -73,6 +74,9 @@
 
 #include "compat.h"
 #include "arpresolv.h"
+#ifdef SUPPORT_PPPOE
+#include "pppoe.h"
+#endif
 #include "libpkt/libpkt.h"
 #include "libaddrlist/libaddrlist.h"
 #include "util.h"
@@ -116,6 +120,7 @@ FILE *debugfh;
 #endif
 
 
+static void logging(char const *fmt, ...);
 static void rfc2544_showresult(void);
 static void rfc2544_showresult_json(char *);
 static void quit(int);
@@ -329,6 +334,10 @@ struct interface {
 
 	struct ether_addr eaddr;	/* my ethernet address */
 	struct ether_addr gweaddr;	/* gw ethernet address */
+	int pppoe;			/* PPPoE server mode. only IPv4 is supported. `ipaddr' and `gwaddr' must be specified */
+#ifdef SUPPORT_PPPOE
+	struct pppoe_softc pppoe_sc;
+#endif
 	int vlan_id;			/* vlan id. 0-4095. used only for TX */
 	int af_addr;			/* AF_INET or AF_INET6 */
 	struct in_addr ipaddr;		/* my IP address */
@@ -442,6 +451,28 @@ pktcpy_vlan(char *dstbuf, char *srcbuf, unsigned int pktsize, int vlan)
 	memcpy(dstbuf + 12 + 4, srcbuf + 12, pktsize - 12);
 }
 
+#ifdef SUPPORT_PPPOE
+/* dstbuf must be 8 bytes larger than the size of srcbuf  */
+static void
+pktcpy_pppoe(char *dstbuf, char *srcbuf, unsigned int pktsize, uint16_t session, uint16_t type)
+{
+	/* copy src/dst mac */
+	memcpy(dstbuf, srcbuf, ETHER_ADDR_LEN * 2);
+
+	/* insert PPPoE header */
+	struct pppoe_l2 *pppoe = (struct pppoe_l2 *)dstbuf;
+	ethpkt_type(dstbuf, ETHERTYPE_PPPOE);
+	pppoe->pppoe.vertype = PPPOE_VERTYPE;
+	pppoepkt_code(dstbuf, 0);
+	pppoepkt_session(dstbuf, session);
+	pppoepkt_length(dstbuf, pktsize - ETHHDRSIZE + 2);
+	pppoepkt_type(dstbuf, type);
+
+	/* copy original ethertype, and L2 payload */
+	memcpy(dstbuf + ETHER_HDR_LEN + 8, srcbuf + ETHER_HDR_LEN, pktsize - ETHER_HDR_LEN);
+}
+#endif
+
 void
 touchup_tx_packet(char *buf, int ifno)
 {
@@ -456,10 +487,15 @@ touchup_tx_packet(char *buf, int ifno)
 
 	ifno_another = ifno ^ 1;
 
-	if (interface[ifno].vlan_id)
+	if (interface[ifno].vlan_id) {
 		l3offset = sizeof(struct ether_vlan_header);
-	else
+#ifdef SUPPORT_PPPOE
+	} else if (interface[ifno].pppoe) {
+		l3offset = sizeof(struct pppoe_l2) + 2;
+#endif
+	} else {
 		l3offset = sizeof(struct ether_header);
+	}
 
 	if (opt_gentest) {
 		/* for benchmark (with -X option) */
@@ -482,15 +518,25 @@ touchup_tx_packet(char *buf, int ifno)
 
 		if (tuple->saddr.af == AF_INET) {
 			if (interface[ifno].vlan_id) {
-				if (opt_udp)
+				if (opt_udp) {
 					pktcpy_vlan(buf, pktbuffer_ipv4_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].vlan_id);
-				else
+				} else {
 					pktcpy_vlan(buf, pktbuffer_ipv4_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].vlan_id);
+				}
+#ifdef SUPPORT_PPPOE
+			} else if (interface[ifno].pppoe) {
+				if (opt_udp) {
+					pktcpy_pppoe(buf, pktbuffer_ipv4_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].pppoe_sc.session, PPP_IP);
+				} else {
+					pktcpy_pppoe(buf, pktbuffer_ipv4_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].pppoe_sc.session, PPP_IP);
+				}
+#endif
 			} else {
-				if (opt_udp)
+				if (opt_udp) {
 					memcpy(buf, pktbuffer_ipv4_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
-				else
+				} else {
 					memcpy(buf, pktbuffer_ipv4_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
+				}
 			}
 
 			ip4pkt_src(buf, l3offset, tuple->saddr.a.addr4.s_addr);
@@ -510,6 +556,14 @@ touchup_tx_packet(char *buf, int ifno)
 					pktcpy_vlan(buf, pktbuffer_ipv6_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].vlan_id);
 				else
 					pktcpy_vlan(buf, pktbuffer_ipv6_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].vlan_id);
+#ifdef SUPPORT_PPPOE
+			} else if (interface[ifno].pppoe) {
+				if (opt_udp) {
+					pktcpy_pppoe(buf, pktbuffer_ipv6_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].pppoe_sc.session, PPP_IPV6);
+				} else {
+					pktcpy_pppoe(buf, pktbuffer_ipv6_tcp[ifno], interface[ifno].pktsize + ETHHDRSIZE, interface[ifno].pppoe_sc.session, PPP_IPV6);
+				}
+#endif
 			} else {
 				if (opt_udp)
 					memcpy(buf, pktbuffer_ipv6_udp[ifno], interface[ifno].pktsize + ETHHDRSIZE);
@@ -552,7 +606,17 @@ touchup_tx_packet(char *buf, int ifno)
 int
 packet_generator(char *buf, int ifno)
 {
-	int vlanadj = (interface[ifno].vlan_id == 0) ? 0 : 4;
+	int vlanadj;
+
+	if (interface[ifno].vlan_id) {
+		vlanadj = 4;
+#ifdef SUPPORT_PPPOE
+	} else if (interface[ifno].pppoe) {
+		vlanadj = 8;
+#endif
+	} else {
+		vlanadj = 0;
+	}
 
 	touchup_tx_packet(buf, ifno);
 
@@ -946,6 +1010,32 @@ interface_setup(int ifno, const char *ifname)
 
 	if (interface[ifno].gw_l2random) {
 		fprintf(stderr, "L2 destination address is random\n");
+
+#ifdef SUPPORT_PPPOE
+	} else if (interface[ifno].pppoe) {
+		int rc;
+		struct pppoe_softc *sc = &interface[ifno].pppoe_sc;
+
+		memset(sc, 0, sizeof(struct pppoe_softc));
+		sc->ifname = interface[ifno].ifname;
+		sc->srcip = interface[ifno].ipaddr;
+		sc->dstip = interface[ifno].gwaddr;
+		sc->session = getpid() & 0xffff;
+		getrandom(&sc->magic, sizeof(sc->magic), 0);
+
+		fprintf(stderr, "%s: accepting PPPoE...\n", interface[ifno].ifname);
+
+		rc = pppoe_server(interface[ifno].ifname, sc);
+		if (rc != 1) {
+			fprintf(stderr, "%s: PPPoE connection could not be established\n", interface[ifno].ifname);
+			exit(1);
+		}
+
+		memcpy(&interface[ifno].gweaddr, &sc->dstmac, ETHER_ADDR_LEN);
+
+		fprintf(stderr, "%s: PPPoE established\n", interface[ifno].ifname);
+
+#endif
 	} else if (memcmp(eth_zero, &interface[ifno].gweaddr, ETHER_ADDR_LEN) == 0) {
 		/* need to resolv arp */
 		struct ether_addr *mac;
@@ -1248,10 +1338,66 @@ ndp_handler(int ifno, char *pkt, int l3offset)
 	}
 }
 
+#ifdef SUPPORT_PPPOE
+int
+pppoe_handler(int ifno, char *pkt)
+{
+	struct pppoe_l2 *req;
+	struct pppoeppp *pppreq;
+	struct pppoe_softc *sc;
+	struct pbuf *p;
+	int pktlen, rc = 0;
+	unsigned char pppopt[128];
+
+	sc = &interface[ifno].pppoe_sc;
+
+	req = (struct pppoe_l2 *)pkt;
+	pppreq = (struct pppoeppp *)(req + 1);
+
+	if (ntohs(pppreq->protocol) == PPP_LCP) {
+		switch (pppreq->ppp.type) {
+		case ECHO_REQ:
+			p = pbuf_alloc(ETHER_MAX_LEN);
+			if (p == NULL) {
+				fprintf(stderr, "cannot allocate buffer for arp request\n");
+			} else {
+				char *pktbuf = p->data;
+				pktlen = ntohs(req->pppoe.plen) + sizeof(struct pppoe_l2);
+
+				memset(pktbuf, 0, pktlen);
+				pppoepkt_template(pktbuf, ETHERTYPE_PPPOE);
+				ethpkt_dst(pktbuf, req->eheader.ether_shost);
+				pppoepkt_session(pktbuf, sc->session);
+				pktlen = pppoepkt_ppp_set(pktbuf, PPP_LCP, ECHO_REPLY, pppreq->ppp.id);
+
+				/* add a magic */
+				memcpy(pppopt, &sc->magic, 4);
+				pktlen = pppoepkt_ppp_add_data(pktbuf, pppopt, 4);
+				if (pktlen > 0) {
+					p->len = pktlen;
+					pbufq_enqueue(&interface[ifno].pbufq, p);
+				} else {
+					pbuf_free(p);
+				}
+
+			}
+			rc = 1;
+			break;
+		case TERM_REQ:
+			/* XXX */
+			logging("%s: LCP TERM-REQ received", interface[ifno].ifname);
+			break;
+		}
+	}
+
+	return rc;
+}
+#endif
+
 void
 receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 {
-	int is_ipv6;
+	int is_ipv6 = 0;
 	struct ether_header *eth;
 	struct ip *ip;
 	struct ip6_hdr *ip6;
@@ -1281,6 +1427,26 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 		/* ignore FLOWCONTROL */
 		interface[ifno].counter.rx_flow++;
 		return;
+#ifdef SUPPORT_PPPOE
+	case ETHERTYPE_PPPOE:
+		{
+			uint16_t *tp = (uint16_t *)(buf + sizeof(struct pppoe_l2));
+			switch (ntohs(*tp)) {
+			case PPP_IP:
+				is_ipv6 = 0;
+				break;
+			case PPP_IPV6:
+				is_ipv6 = 1;
+				break;
+			}
+		}
+		l3_offset = sizeof(struct pppoe_l2) + 2;
+		if (pppoe_handler(ifno, buf) != 0) {
+			interface[ifno].counter.rx_arp++;
+			return;
+		}
+		break;
+#endif
 	case ETHERTYPE_ARP:
 		interface[ifno].counter.rx_arp++;
 		arp_handler(ifno, buf, l3_offset);
@@ -1920,10 +2086,12 @@ usage(void)
 	       "\n"
 	       "usage: ipgen [options]\n"
 	       "	[-V <vlanid>]\n"
+	       "	[-P]\n"
 	       "	-R <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n"
 	       "					set RX interface\n"
 	       "\n"
 	       "	[-V <vlanid>]\n"
+	       "	[-P]\n"
 	       "	-T <ifname>,<gateway-address>[,<own-address>[/<prefix>]]\n"
 	       "					set TX interface\n"
 	       "\n"
@@ -3272,6 +3440,7 @@ main(int argc, char *argv[])
 	int ch, optidx;
 	int pps;
 	int rc;
+	int pppoe = 0;
 	int vlan = 0;
 	char ifname[2][IFNAMSIZ];
 	char drvname[2][IFNAMSIZ];
@@ -3299,7 +3468,7 @@ main(int argc, char *argv[])
 		interface[i].pktsize = min_pktsize;
 	}
 
-	while ((ch = getopt_long(argc, argv, "D:dF:fH:L:n:p:R:S:s:T:tvV:X", longopts, &optidx)) != -1) {
+	while ((ch = getopt_long(argc, argv, "D:dF:fH:L:n:Pp:R:S:s:T:tvV:X", longopts, &optidx)) != -1) {
 		switch (ch) {
 		case 'd':
 			opt_debuglevel++;
@@ -3308,6 +3477,9 @@ main(int argc, char *argv[])
 			opt_debug = optarg;
 			break;
 
+		case 'P':
+			pppoe = 1;
+			break;
 		case 'V':
 			vlan = strtol(optarg, (char **)NULL, 10);
 			if (vlan < 0 || vlan >= 4096) {
@@ -3325,8 +3497,20 @@ main(int argc, char *argv[])
 				ifno = (ch == 'T') ? 1 : 0;
 				tofree = s = strdup(optarg);
 
+				if (vlan && pppoe) {
+					fprintf(stderr, "VLAN (-V) and PPPoE (-P) cannot be specified at the same time\n");
+					usage();
+				}
+#ifndef SUPPORT_PPPOE
+				if (pppoe) {
+					fprintf(stderr, "PPPoE is not supported on this OS\n");
+					usage();
+				}
+#endif
 				interface[ifno].vlan_id = vlan;
+				interface[ifno].pppoe = pppoe;
 				vlan = 0;
+				pppoe = 0;
 
 				/*
 				 * parse
@@ -3433,6 +3617,17 @@ main(int argc, char *argv[])
 				}
 
 				free(tofree);
+
+#ifdef SUPPORT_PPPOE
+				if (pppoe) {
+					if (interface[ifno].af_gwaddr != AF_INET ||
+					    interface[ifno].af_addr != AF_INET) {
+						fprintf(stderr, "For PPPoE, gateway-address and down-address must be IP addresses: %s\n", optarg);
+						usage();
+					}
+				}
+#endif
+
 			}
 			break;
 		case 'X':

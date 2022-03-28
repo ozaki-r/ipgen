@@ -11,7 +11,9 @@ CFLAGS+=	-DUSE_AF_XDP
 SRCS+=		arpresolv_linux.c af_xdp.c
 else
 CFLAGS+=	-DIPG_HACK -DUSE_NETMAP
+CFLAGS+=	-DSUPPORT_PPPOE
 SRCS+=		arpresolv.c
+SRCS+=		pppoe.c
 endif
 
 OBJS+=  $(patsubst %.S,%.o,$(SRCS:%.c=%.o))

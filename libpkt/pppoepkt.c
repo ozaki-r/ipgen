@@ -28,14 +28,14 @@
 #include "libpkt.h"
 
 int
-pppoepkt_template(char *buf)
+pppoepkt_template(char *buf, uint16_t type)
 {
 	struct pppoe_l2 *pppoe;
 
 	pppoe = (struct pppoe_l2 *)buf;
 	memset(pppoe, 0, sizeof(*pppoe));
 
-	pppoe->eheader.ether_type = htons(ETHERTYPE_PPPOEDISC);
+	pppoe->eheader.ether_type = htons(type);
 	pppoe->pppoe.vertype = PPPOE_VERTYPE;
 
 	return sizeof(*pppoe);
@@ -61,6 +61,19 @@ pppoepkt_session(char *buf, uint16_t session)
 	pppoe->pppoe.session = session;
 
 	return sizeof(*pppoe);
+}
+
+int
+pppoepkt_type(char *buf, uint16_t type)
+{
+	struct pppoe_l2 *pppoe;
+	uint16_t *tp;
+
+	pppoe = (struct pppoe_l2 *)buf;
+	tp = (uint16_t *)(pppoe + 1);
+	*tp = htons(type);
+
+	return sizeof(*pppoe) + 2;
 }
 
 int

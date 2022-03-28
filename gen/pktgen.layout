@@ -4,7 +4,7 @@
                                                                           
   Total Count:                                                            
     TX: ######################## pkt    TX: ###################### pkt    	id=if0_tx,U64			id=if1_tx,U64
-    TX-arp/ndp: ################ pkt    TX-arp/ndp: ############## pkt    	id=if0_tx_other,U64		id=if1_tx_other,U64
+    TX-arp/ndp/LCP: ############ pkt    TX-arp/ndp/LCP: ########## pkt    	id=if0_tx_other,U64		id=if1_tx_other,U64
     TX-underrun: ############### pkt    TX-underrun: ############# pkt    	id=if0_tx_underrun,U64		id=if1_rx_underrun,U64
     RX: ######################## pkt    RX: ###################### pkt    	id=if0_rx,U64			id=if1_rx,U64
     RX-drop: ################### pkt    RX-drop: ################# pkt    	id=if0_rx_drop,U64		id=if1_rx_drop,U64
@@ -12,7 +12,7 @@
     RX-reorder/flow: ########### pkt    RX-reorder/flow: ######### pkt    	id=if0_rx_reorder_flow,U64	id=if1_rx_reorder_flow,U64
     RX-reorder: ################ pkt    RX-reorder: ############## pkt    	id=if0_rx_reorder,U64		id=if1_rx_reorder,U64
     RX-flowctrl: ############### pkt    RX-flowctrl: ############# pkt    	id=if0_rx_flow,U64		id=if1_rx_flow,U64
-    RX-arp/ndp: ################ pkt    RX-arp/ndp: ############## pkt    	id=if0_rx_arp,U64		id=if1_rx_arp,U64
+    RX-arp/ndp/LCP: ############ pkt    RX-arp/ndp/LCP: ########## pkt    	id=if0_rx_arp,U64		id=if1_rx_arp,U64
     RX-icmp: ################### pkt    RX-icmp: ################# pkt    	id=if0_rx_icmp,U64		id=if1_rx_icmp,U64
     RX-other: ################## pkt    RX-other: ################ pkt    	id=if0_rx_other,U64		id=if1_rx_other,U64
     RX-expired: ################ pkt    RX-expired: ############## pkt    	id=if0_rx_expire,U64		id=if1_rx_expire,U64

@@ -221,9 +221,11 @@ int ethpkt_src(char *, u_char *);
 int ethpkt_dst(char *, u_char *);
 
 /* pppoepkt.c */
-int pppoepkt_template(char *);
+int pppoepkt_template(char *, uint16_t);
+
 int pppoepkt_code(char *, uint8_t);
 int pppoepkt_session(char *, uint16_t);
+int pppoepkt_type(char *, uint16_t);
 int pppoepkt_length(char *, uint16_t);
 int pppoepkt_tag_extract(char *, uint16_t, void *, uint16_t *);
 int pppoepkt_tag_add(char *, uint16_t, void *, uint16_t);
