@@ -271,8 +271,6 @@ struct interface {
 		uint64_t rx;		/* not include rx_* */
 		uint64_t rx_flow;
 		uint64_t rx_arp;
-		uint64_t rx_udp;
-		uint64_t rx_tcp;
 		uint64_t rx_icmp;
 		uint64_t rx_icmpother;
 		uint64_t rx_icmpecho;
@@ -482,7 +480,7 @@ touchup_tx_packet(char *buf, int ifno)
 	const struct address_tuple *tuple;
 	int ipv6;
 	int ifno_another;
-	unsigned int l3offset;
+	unsigned int l3offset, l4payloadsize;
 	struct sequence_record *seqrecord;
 
 	ifno_another = ifno ^ 1;
@@ -586,6 +584,15 @@ touchup_tx_packet(char *buf, int ifno)
 		if (interface[ifno_another].gw_l2random)
 			ethpkt_src(buf, (u_char *)tuple->seaddr.octet);
 
+		if (ipv6)
+			l4payloadsize = interface[ifno].pktsize - sizeof(struct ip6_hdr);
+		else
+			l4payloadsize = interface[ifno].pktsize - sizeof(struct ip);
+		if (opt_udp)
+			l4payloadsize -= sizeof(struct udphdr);
+		else
+			l4payloadsize -= sizeof(struct tcphdr);
+
 		/* store sequence number, and remember relational info */
 		seqrecord = seqtable_prep(interface[ifno_another].seqtable);
 		seqdata.magic = seq_magic;
@@ -594,12 +601,10 @@ touchup_tx_packet(char *buf, int ifno)
 		seqrecord->flowseq = interface[ifno].sequence_tx_perflow[flowid]++;
 		seqrecord->ts = currenttime_tx;
 
-
 		if (ipv6) 
-			ip6pkt_writedata(buf, l3offset, 0, (char *)&seqdata, sizeof(seqdata));
+			ip6pkt_writedata(buf, l3offset, l4payloadsize - sizeof(seqdata), (char *)&seqdata, sizeof(seqdata));
 		else
-			ip4pkt_writedata(buf, l3offset, 0, (char *)&seqdata, sizeof(seqdata));
-
+			ip4pkt_writedata(buf, l3offset, l4payloadsize - sizeof(seqdata), (char *)&seqdata, sizeof(seqdata));
 	}
 }
 
@@ -1401,8 +1406,6 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 	struct ether_header *eth;
 	struct ip *ip;
 	struct ip6_hdr *ip6;
-	struct udphdr *udp = NULL;
-	struct tcphdr *tcp = NULL;
 	int l3_offset;
 	uint16_t type;
 
@@ -1500,21 +1503,6 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 				return;
 			}
 		}
-
-		switch (ip6->ip6_nxt) {
-		case IPPROTO_UDP:
-			interface[ifno].counter.rx_udp++;
-			udp = (struct udphdr *)(ip6 + 1);
-			break;
-		case IPPROTO_TCP:
-			interface[ifno].counter.rx_tcp++;
-			tcp = (struct tcphdr *)(ip6 + 1);
-			break;
-		default:
-			interface[ifno].counter.rx_other++;
-			return;
-		}
-
 	} else {
 		/* IPv4 packet */
 		ip = (struct ip *)(buf + l3_offset);
@@ -1541,80 +1529,60 @@ receive_packet(int ifno, struct timespec *curtime, char *buf, uint16_t len)
 				return;
 			}
 		}
-
-		switch (ip->ip_p) {
-		case IPPROTO_UDP:
-			interface[ifno].counter.rx_udp++;
-			udp = (struct udphdr *)((char *)ip + ip->ip_hl * 4);
-			break;
-		case IPPROTO_TCP:
-			interface[ifno].counter.rx_tcp++;
-			tcp = (struct tcphdr *)((char *)ip + ip->ip_hl * 4);
-			break;
-		default:
-			interface[ifno].counter.rx_other++;
-			return;
-		}
 	}
 
-	if ((opt_udp && (udp != NULL)) || (opt_tcp && (tcp != NULL))) {
-		/* check sequence */
-		struct seqdata *seqdata;
-		struct sequence_record *seqrecord;
-		uint64_t seq, seqflow, nskip;
-		uint32_t flowid;
-		struct timespec ts_delta;
-		double latency;
+	/* check sequence */
+	struct seqdata *seqdata;
+	struct sequence_record *seqrecord;
+	uint64_t seq, seqflow, nskip;
+	uint32_t flowid;
+	struct timespec ts_delta;
+	double latency;
 
-		if (is_ipv6)
-			seqdata = (struct seqdata *)ip6pkt_getptr(buf, l3_offset, 0);
-		else
-			seqdata = (struct seqdata *)ip4pkt_getptr(buf, l3_offset, 0);
+	seqdata = (struct seqdata *)(buf + len - sizeof(struct seqdata));
+	if (seqdata->magic != seq_magic) {
+		/* no ipgen packet? */
+		interface[ifno].counter.rx_other++;
+		return;
+	}
 
-		if (seqdata->magic != seq_magic) {
-			/* no ipgen packet? */
-			interface[ifno].counter.rx_other++;
+	seq = seqdata->seq;
+	seqrecord = seqtable_get(interface[ifno].seqtable, seq);
 
-		} else {
-			seq = seqdata->seq;
-			seqrecord = seqtable_get(interface[ifno].seqtable, seq);
+	if ((seqrecord == NULL) || seqrecord->seq != seq) {
+		interface[ifno].counter.rx_expire++;
+	} else {
+		timespecsub(curtime, &seqrecord->ts, &ts_delta);
+		ts_delta.tv_sec &= 0xff;
+		latency = ts_delta.tv_sec / 1000 + ts_delta.tv_nsec / 1000000.0;
 
-			if ((seqrecord == NULL) || seqrecord->seq != seq) {
-				interface[ifno].counter.rx_expire++;
-			} else {
-				timespecsub(curtime, &seqrecord->ts, &ts_delta);
-				ts_delta.tv_sec &= 0xff;
-				latency = ts_delta.tv_sec / 1000 + ts_delta.tv_nsec / 1000000.0;
+		interface[ifno].counter.latency_sum += latency;
+		interface[ifno].counter.latency_npkt++;
+		interface[ifno].counter.latency_avg =
+		    interface[ifno].counter.latency_sum / 
+		    interface[ifno].counter.latency_npkt;
 
-				interface[ifno].counter.latency_sum += latency;
-				interface[ifno].counter.latency_npkt++;
-				interface[ifno].counter.latency_avg =
-				    interface[ifno].counter.latency_sum / 
-				    interface[ifno].counter.latency_npkt;
+		if ((interface[ifno].counter.latency_min == 0) ||
+		    (interface[ifno].counter.latency_min > latency))
+			interface[ifno].counter.latency_min = latency;
+		if (interface[ifno].counter.latency_max < latency)
+			interface[ifno].counter.latency_max = latency;
 
-				if ((interface[ifno].counter.latency_min == 0) ||
-				    (interface[ifno].counter.latency_min > latency))
-					interface[ifno].counter.latency_min = latency;
-				if (interface[ifno].counter.latency_max < latency)
-					interface[ifno].counter.latency_max = latency;
+		flowid = seqrecord->flowid;
+		seqflow = seqrecord->flowseq;
+		if (get_flowid_max(ifno) >= flowid)
+			nskip = seqcheck_receive(interface[ifno].seqchecker_perflow[flowid], seqflow);
 
-				flowid = seqrecord->flowid;
-				seqflow = seqrecord->flowseq;
-				if (get_flowid_max(ifno) >= flowid)
-					nskip = seqcheck_receive(interface[ifno].seqchecker_perflow[flowid], seqflow);
-
-				nskip = seqcheck_receive(interface[ifno].seqchecker, seq);
-				if (opt_debuglevel > 1) {
-					/* DEBUG */
-					if (nskip > 2) {
-						printf("\r\n\r\n\r\n\r\n\r\n\r\n<seq=%llu, nskip=%llu, tx0=%llu, tx1=%llu>",
-						    (unsigned long long)seq,
-						    (unsigned long long)nskip,
-						    (unsigned long long)interface[0].sequence_tx,
-						    (unsigned long long)interface[1].sequence_tx);
-						dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
-					}
-				}
+		nskip = seqcheck_receive(interface[ifno].seqchecker, seq);
+		if (opt_debuglevel > 1) {
+			/* DEBUG */
+			if (nskip > 2) {
+				printf("\r\n\r\n\r\n\r\n\r\n\r\n<seq=%llu, nskip=%llu, tx0=%llu, tx1=%llu>",
+				    (unsigned long long)seq,
+				    (unsigned long long)nskip,
+				    (unsigned long long)interface[0].sequence_tx,
+				    (unsigned long long)interface[1].sequence_tx);
+				dumpstr(buf, len, DUMPSTR_FLAGS_CRLF);
 			}
 		}
 	}
