@@ -6,7 +6,7 @@ CFLAGS+=	-I.. -I/usr/local/include -g -Wall -DHTDOCS=\"${PREFIX}/share/ipgen/htd
 LDADD=		-L../libpkt -lpkt -L../libaddrlist -L/usr/local/lib -laddrlist -lpthread -lc -lcurses -levent -lmd
 
 ifeq ($(shell uname),Linux)
-LDADD+=		-lbsd -lcrypto -lbpf
+LDADD+=		-lbsd -lcrypto -lxdp
 CFLAGS+=	-DUSE_AF_XDP
 SRCS+=		arpresolv_linux.c af_xdp.c
 else
