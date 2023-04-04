@@ -2635,7 +2635,7 @@ static int
 rfc2544_down_pps(void)
 {
 	if ((rfc2544_work[rfc2544_nthtest].curpps - rfc2544_work[rfc2544_nthtest].ppsresolution) <= rfc2544_work[rfc2544_nthtest].minpps) {
-		rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].minpps - rfc2544_work[rfc2544_nthtest].ppsresolution;
+		rfc2544_work[rfc2544_nthtest].curpps = rfc2544_work[rfc2544_nthtest].minpps;
 		return 1;
 	}
 
