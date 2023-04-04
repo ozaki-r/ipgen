@@ -2797,6 +2797,8 @@ rfc2544_test(int unsigned n)
 			} else {
 				/* pause frame workaround */
 				const uint64_t pause_detect_threshold = 10000; /* XXXX */
+				DEBUGLOG("RFC2544: tx_underrun=%lu, pause_detect_threshold=%lu, tx=%lu, tolerable_error_rate=%.4f\n",
+				    interface[1].counter.tx_underrun, pause_detect_threshold, interface[1].counter.tx, opt_rfc2544_tolerable_error_rate);
 				if (interface[1].counter.tx_underrun > pause_detect_threshold
 				    && (((interface[1].counter.tx_underrun * 100.0) / interface[1].counter.tx)
 					> opt_rfc2544_tolerable_error_rate)) {
@@ -2804,6 +2806,12 @@ rfc2544_test(int unsigned n)
 					DEBUGLOG("RFC2544: pktsize=%d, pps=%d, pause frame workaround. down pps\n",
 					    rfc2544_work[rfc2544_nthtest].pktsize,
 					    rfc2544_work[rfc2544_nthtest].curpps);
+				} else if ((interface[0].counter.rx * 100.0 / interface[1].counter.tx) < opt_rfc2544_tolerable_error_rate) {
+					do_down_pps = 1;
+					DEBUGLOG("RFC2544: pktsize=%d, pps=%d, tx=%llu, rx=%llu, enough packets not received. down pps\n",
+					    rfc2544_work[rfc2544_nthtest].pktsize,
+					    rfc2544_work[rfc2544_nthtest].curpps,
+					    (unsigned long long)interface[1].counter.tx, (unsigned long long)interface[0].counter.rx);
 				} else {
 					/* no drop. OK! */
 					measure_done = rfc2544_up_pps();
