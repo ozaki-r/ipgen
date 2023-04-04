@@ -816,12 +816,13 @@ calc_ipg(int ifno)
 		}
 		/*  / 1000 / 1000; */
 
-		if ((bps % (1 * 1000 * 1000 * 1000)) > 0)
-			bps += 1 * 1000 * 1000 * 1000;
-		new_pap = bps / (1 * 1000 * 1000 * 1000);
+		DEBUGLOG("pps=%u, bps=%lu\n", interface[ifno].transmit_pps, bps);
+		if ((bps % (interface[ifno].maxlinkspeed / 10)) > 0)
+			bps += interface[ifno].maxlinkspeed / 10;
+		new_pap = bps / (interface[ifno].maxlinkspeed / 10);
 
 		if (new_pap == 0)
-			new_pap = 1; /* 1Gbps */
+			new_pap = 1;
 		if (new_pap >= 10)
 			new_pap = 0;
 
