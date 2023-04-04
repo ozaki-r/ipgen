@@ -640,6 +640,30 @@ statistics_clear(void)
 	return 0;
 }
 
+#ifdef __linux__
+int
+getdrvname(const char *ifname, char *drvname)
+{
+	ssize_t n;
+	char pathbuf[256];
+	char linkbuf[256];
+	char *drvstr;
+
+	snprintf(pathbuf, sizeof(pathbuf), "/sys/class/net/%s/device/driver", ifname);
+	n = readlink(pathbuf, linkbuf, sizeof(linkbuf));
+	if (n == -1)
+		return -1;
+
+	/* ex /sys/bus/pci/drivers/ixgbe */
+	drvstr = strrchr(linkbuf, '/');
+	if (drvstr == NULL)
+		return -1;
+	drvstr++;
+	strcpy(drvname, drvstr);
+
+	return 0;
+}
+#else
 int
 getifunit(const char *ifname, char *drvname, unsigned long *unit)
 {
@@ -660,12 +684,36 @@ getifunit(const char *ifname, char *drvname, unsigned long *unit)
 
 	return 0;
 }
+#endif
 
 #ifdef IPG_HACK
+
+#ifdef __linux__
+static int
+write_if_sysfs(const char *ifname, const char *target, unsigned int val)
+{
+	char path[64], buf[128];
+
+	snprintf(path, sizeof(path), "/sys/class/net/%s/%s", ifname, target);
+	if (access(path, W_OK) != 0)
+		return -1;
+	snprintf(buf, sizeof(buf), "echo %u > %s", val, path);
+	return system(buf);
+}
+#endif
+
 /* set Transmit Inter Packet Gap */
 static int
 set_ipg(int ifno, unsigned int ipg)
 {
+#ifdef __linux__
+	const char *ifname = interface[ifno].ifname;
+
+	if (ifname == NULL || ifname[0] == '\0')
+		return -1;
+	DEBUGLOG("%s: setting tipg=%u\n", ifname, ipg);
+	return write_if_sysfs(ifname, "tipg", ipg);
+#else
 	char buf[256];
 	const char *drvname = interface[ifno].drvname;
 	unsigned long unit = interface[ifno].unit;
@@ -677,6 +725,7 @@ set_ipg(int ifno, unsigned int ipg)
 
 		return system(buf);
 	}
+#endif
 
 	return -1;
 }
@@ -685,6 +734,14 @@ set_ipg(int ifno, unsigned int ipg)
 static int
 set_pap(int ifno, unsigned int pap)
 {
+#ifdef __linux__
+	const char *ifname = interface[ifno].ifname;
+
+	if (ifname == NULL || ifname[0] == '\0')
+		return -1;
+	DEBUGLOG("%s: setting pap=%u\n", ifname, pap);
+	return write_if_sysfs(ifname, "pap", pap);
+#else
 	char buf[256];
 	const char *drvname = interface[ifno].drvname;
 	unsigned long unit = interface[ifno].unit;
@@ -696,6 +753,7 @@ set_pap(int ifno, unsigned int pap)
 	}
 
 	return -1;
+#endif
 }
 #endif /* IPG_HACK */
 
@@ -712,21 +770,33 @@ reset_ipg(int ifno)
 
 	if ((strncmp(drvname, "em", IFNAMSIZ) == 0)
 	    || (strncmp(drvname, "igb", IFNAMSIZ) == 0)) {
+#ifdef __linux__
+		snprintf(buf, sizeof(buf), "echo 8 > /sys/class/net/%s/tipg", interface[ifno].ifname);
+#else
 		snprintf(buf, sizeof(buf), "sysctl -q -w dev.%s.%lu.tipg=8 > /dev/null", drvname, unit);
+#endif
 
 		system(buf);
 	} else if (strncmp(drvname, "ix", IFNAMSIZ) == 0) {
 		int rv;
 
 		/* Try TIPG first */
+#ifdef __linux__
+		snprintf(buf, sizeof(buf), "echo 0 > /sys/class/net/%s/tipg 2>/dev/null", interface[ifno].ifname);
+#else
 		snprintf(buf, sizeof(buf), "sysctl -q -w dev.%s.%lu.tipg=0 > /dev/null", drvname, unit);
+#endif
 
 		rv = system(buf);
 		if (rv == 0)
 			return;
 
 		/* If failed, try PAP */
+#ifdef __linux__
+		snprintf(buf, sizeof(buf), "echo 0 > /sys/class/net/%s/pap", interface[ifno].ifname);
+#else
 		snprintf(buf, sizeof(buf), "sysctl -q -w dev.%s.%lu.pap=0 > /dev/null", drvname, unit);
+#endif
 
 		system(buf);
 	}
@@ -763,8 +833,8 @@ calc_ipg(int ifno)
 		return;
 	}
 
-	if ((strncmp(interface[ifno].ifname, "em", 2) == 0) ||
-	    (strncmp(interface[ifno].ifname, "igb", 3) == 0)) {
+	if ((strncmp(interface[ifno].drvname, "em", 2) == 0) ||
+	    (strncmp(interface[ifno].drvname, "igb", 3) == 0)) {
 
 		if (interface[ifno].transmit_pps == 0) {
 			dev_tipg = INT_MAX;
@@ -782,7 +852,7 @@ calc_ipg(int ifno)
 
 		ipg = dev_tipg + 4;	/* restore offset */
 		update_transmit_max_sustained_pps(ifno, ipg);
-	} else if (strncmp(interface[ifno].ifname, "ix", 2) == 0) {
+	} else if (strncmp(interface[ifno].drvname, "ix", 2) == 0) {
 		unsigned long bps;
 		uint32_t new_pap;
 		int error;
@@ -3512,6 +3582,25 @@ main(int argc, char *argv[])
 				strncpy(ifname[ifno], p, sizeof(ifname[0]));
 
 #ifdef IPG_HACK
+#ifdef __linux__
+				char path[256];
+
+				snprintf(path, sizeof(path), "/sys/class/net/%s/tipg", ifname[ifno]);
+				if (access(path, R_OK|W_OK) == 0) {
+					support_ipg = 1;
+					printf("%s TIPG feature supported\n", ifname[ifno]);
+				} else {
+					snprintf(path, sizeof(path), "/sys/class/net/%s/pap", ifname[ifno]);
+					if (access(path, R_OK|W_OK) == 0) {
+						support_ipg = 1;
+						printf("%s PAP feature supported\n", ifname[ifno]);
+					} else
+						printf("%s Neither TIPG nor PAP feature supported\n", ifname[ifno]);
+				}
+
+				if (getdrvname(ifname[ifno], drvname[ifno]) == -1)
+					printf("warning: failed to get drvname of %s\n", ifname[ifno]);
+#else
 				if (getifunit(ifname[ifno], drvname[ifno], &unit[ifno]) != -1) {
 					char strbuf[256];
 
@@ -3529,6 +3618,7 @@ main(int argc, char *argv[])
 					}
 				}
 #endif
+#endif /* IPG_HACK */
 				p = strsep(&s, ",");
 				/* parse IPv4 or IPv6 or MAC-ADDRESS */
 				if (inet_pton(AF_INET, p, &interface[ifno].gwaddr) == 1) {

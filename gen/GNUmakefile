@@ -7,7 +7,7 @@ LDADD=		-L../libpkt -lpkt -L../libaddrlist -L/usr/local/lib -laddrlist -lpthread
 
 ifeq ($(shell uname),Linux)
 LDADD+=		-lbsd -lcrypto -lxdp
-CFLAGS+=	-DUSE_AF_XDP
+CFLAGS+=	-DIPG_HACK -DUSE_AF_XDP
 SRCS+=		arpresolv_linux.c af_xdp.c
 else
 CFLAGS+=	-DIPG_HACK -DUSE_NETMAP
